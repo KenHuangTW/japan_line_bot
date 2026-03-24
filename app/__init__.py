@@ -1,0 +1,1 @@
+"""Nihon LINE bot package."""
