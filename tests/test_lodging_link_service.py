@@ -74,6 +74,23 @@ def test_lodging_link_service_filters_non_lodging_agoda_links() -> None:
     assert resolver.calls == []
 
 
+def test_lodging_link_service_filters_non_lodging_booking_links() -> None:
+    resolver = FakeLodgingUrlResolver()
+    service = LodgingLinkService(resolver)
+    matches = [
+        LodgingLinkMatch(
+            platform="booking",
+            url="https://www.booking.com/searchresults.zh-tw.html?ss=Tokyo",
+            hostname="booking.com",
+        )
+    ]
+
+    resolved_matches = asyncio.run(service.filter_supported_lodging_links(matches))
+
+    assert resolved_matches == []
+    assert resolver.calls == []
+
+
 def test_lodging_link_service_resolves_agoda_short_links() -> None:
     short_url = "https://www.agoda.com/sp/B70FF37xamn"
     resolved_url = (
@@ -96,6 +113,28 @@ def test_lodging_link_service_resolves_agoda_short_links() -> None:
     assert resolved_matches[0].url == short_url
     assert resolved_matches[0].resolved_url == resolved_url
     assert resolved_matches[0].resolved_hostname == "agoda.com"
+    assert resolver.calls == [short_url]
+
+
+def test_lodging_link_service_resolves_booking_short_links() -> None:
+    short_url = "https://www.booking.com/Share-08PTGo"
+    resolved_url = "https://www.booking.com/hotel/jp/hotel-resol-ueno.zh-tw.html"
+    resolver = FakeLodgingUrlResolver(resolved_urls={short_url: resolved_url})
+    service = LodgingLinkService(resolver)
+    matches = [
+        LodgingLinkMatch(
+            platform="booking",
+            url=short_url,
+            hostname="booking.com",
+        )
+    ]
+
+    resolved_matches = asyncio.run(service.filter_supported_lodging_links(matches))
+
+    assert len(resolved_matches) == 1
+    assert resolved_matches[0].url == short_url
+    assert resolved_matches[0].resolved_url == resolved_url
+    assert resolved_matches[0].resolved_hostname == "booking.com"
     assert resolver.calls == [short_url]
 
 
