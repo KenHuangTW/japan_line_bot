@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlsplit
 
+from app.lodging_links.common import normalize_hostname
+
 AGODA_NON_LODGING_PATH_PREFIXES = (
     "/activities",
     "/blog",
@@ -14,13 +16,6 @@ AGODA_NON_LODGING_PATH_PREFIXES = (
 AGODA_SHORT_LINK_PREFIX = "/sp/"
 
 AgodaUrlKind = Literal["lodging", "short_link", "non_lodging", "unknown"]
-
-
-def normalize_hostname(hostname: str | None) -> str:
-    normalized = (hostname or "").lower()
-    if normalized.startswith("www."):
-        normalized = normalized[4:]
-    return normalized
 
 
 def is_agoda_hostname(hostname: str | None) -> bool:
