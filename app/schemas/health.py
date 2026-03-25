@@ -8,4 +8,5 @@ class HealthzResponse(BaseModel):
     environment: str
     line_secret_configured: bool
     line_reply_configured: bool
-    collector_output_path: str
+    storage_backend: str
+    storage_target: str

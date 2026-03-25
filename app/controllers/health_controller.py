@@ -10,5 +10,6 @@ def build_healthz_response(settings: Settings) -> HealthzResponse:
         environment=settings.app_env,
         line_secret_configured=settings.is_line_secret_configured,
         line_reply_configured=settings.is_line_reply_configured,
-        collector_output_path=str(settings.collector_output_path),
+        storage_backend=settings.storage_backend,
+        storage_target=settings.storage_target,
     )

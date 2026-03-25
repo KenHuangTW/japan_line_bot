@@ -1,0 +1,39 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nihon-line-bot-server
+    env_file:
+      - .env
+    environment:
+      APP_ENV: docker
+      STORAGE_BACKEND: mongo
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DATABASE: nihon_line_bot
+      MONGO_COLLECTION: captured_lodging_links
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7.0
+    container_name: nihon-line-bot-mongo
+    environment:
+      MONGO_INITDB_DATABASE: nihon_line_bot
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mongo_data:

@@ -51,6 +51,7 @@ def _build_payload(message_text: str) -> dict[str, object]:
 def test_line_webhook_captures_links_and_replies(tmp_path: Path) -> None:
     output_path = tmp_path / "captured.jsonl"
     settings = Settings(
+        storage_backend="jsonl",
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
         collector_output_path=output_path,
@@ -100,6 +101,7 @@ def test_line_webhook_captures_links_and_replies(tmp_path: Path) -> None:
 def test_line_webhook_rejects_invalid_signature(tmp_path: Path) -> None:
     output_path = tmp_path / "captured.jsonl"
     settings = Settings(
+        storage_backend="jsonl",
         line_channel_secret="super-secret",
         collector_output_path=output_path,
     )
@@ -119,6 +121,7 @@ def test_line_webhook_rejects_invalid_signature(tmp_path: Path) -> None:
 def test_line_webhook_still_succeeds_when_reply_fails(tmp_path: Path) -> None:
     output_path = tmp_path / "captured.jsonl"
     settings = Settings(
+        storage_backend="jsonl",
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
         collector_output_path=output_path,
