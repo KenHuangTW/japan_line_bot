@@ -19,6 +19,11 @@ class FakeLineClient:
         self.calls.append((reply_token, text))
 
 
+class FailingLineClient:
+    async def reply_text(self, reply_token: str, text: str) -> None:
+        raise RuntimeError("simulated LINE reply failure")
+
+
 def _build_payload(message_text: str) -> dict[str, object]:
     return {
         "destination": "Ubot",
@@ -109,3 +114,36 @@ def test_line_webhook_rejects_invalid_signature(tmp_path: Path) -> None:
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid LINE signature."
+
+
+def test_line_webhook_still_succeeds_when_reply_fails(tmp_path: Path) -> None:
+    output_path = tmp_path / "captured.jsonl"
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        collector_output_path=output_path,
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=JsonlCollector(output_path),
+            line_client=FailingLineClient(),
+        )
+    )
+
+    payload = _build_payload("https://www.booking.com/hotel/jp/foo.html")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 1}
+    assert output_path.read_text(encoding="utf-8")

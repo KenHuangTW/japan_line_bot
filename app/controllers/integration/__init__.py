@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from app.controllers.integration.line_client import (
     HttpLineClient,
     LineClient,
