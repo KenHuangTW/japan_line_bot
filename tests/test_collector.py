@@ -4,11 +4,7 @@ from datetime import datetime
 
 from app.collector import create_collector
 from app.config import Settings
-from app.controllers.repositories.captured_link_repository import (
-    JsonlCapturedLinkRepository,
-    MongoCapturedLinkRepository,
-)
-from app.models import CapturedLodgingLink
+from app.models import CapturedLodgingLink, MongoCapturedLinkRepository
 
 
 class FakeInsertManyResult:
@@ -102,7 +98,6 @@ def test_create_collector_uses_mongo_backend() -> None:
         return client
 
     settings = Settings(
-        storage_backend="mongo",
         mongo_uri="mongodb://mongo:27017",
         mongo_database="nihon_line_bot",
         mongo_collection="captured_links",
@@ -121,22 +116,8 @@ def test_create_collector_uses_mongo_backend() -> None:
     assert created_clients[0].database.requested_collections == ["captured_links"]
 
 
-def test_create_collector_uses_jsonl_backend(tmp_path) -> None:
-    output_path = tmp_path / "captured.jsonl"
-    settings = Settings(
-        storage_backend="jsonl",
-        collector_output_path=output_path,
-    )
-
-    collector, resource = create_collector(settings)
-
-    assert isinstance(collector, JsonlCapturedLinkRepository)
-    assert resource is None
-
-
 def test_storage_target_redacts_password() -> None:
     settings = Settings(
-        storage_backend="mongo",
         mongo_uri="mongodb://line-bot:super-secret@mongo:27017",
         mongo_database="nihon_line_bot",
         mongo_collection="captured_links",
