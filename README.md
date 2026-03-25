@@ -7,7 +7,7 @@
 - 驗證 LINE webhook 簽章
 - 接收群組或私聊的文字訊息
 - 擷取 `booking.com` / `agoda.com` 連結
-- 預設把住宿連結寫進 MongoDB，保留 `JSONL` fallback 方便測試或離線開發
+- 把住宿連結寫進 MongoDB
 - 成功擷取後回覆一則確認訊息
 
 ## 專案結構
@@ -21,7 +21,7 @@ app/
   line_service.py
   link_extractor.py
   collector.py
-  models.py
+  models/
 Dockerfile
 docker-compose.yml
 mongo.sh
@@ -56,12 +56,9 @@ cp .env.example .env
 
 預設資料儲存設定如下：
 
-- `STORAGE_BACKEND=mongo`
 - `MONGO_URI=mongodb://127.0.0.1:27017`
 - `MONGO_DATABASE=nihon_line_bot`
 - `MONGO_COLLECTION=captured_lodging_links`
-
-如果你暫時不想跑 MongoDB，也可以把 `STORAGE_BACKEND=jsonl`，此時會改寫到 `COLLECTOR_OUTPUT_PATH`。
 
 ## 啟動 MongoDB
 
@@ -148,5 +145,3 @@ https://<your-domain>/webhooks/line
 - groupId / roomId / userId
 - message id
 - webhook timestamp
-
-如果切到 `jsonl` fallback，資料格式會維持一行一筆 JSON，欄位內容相同。

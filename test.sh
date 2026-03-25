@@ -75,20 +75,11 @@ payload = {
     ],
 }
 
-before_count = 0
-collection = None
-mongo_client = None
+from pymongo import MongoClient
 
-if settings.storage_backend == "mongo":
-    from pymongo import MongoClient
-
-    mongo_client = MongoClient(settings.mongo_uri, tz_aware=True)
-    collection = mongo_client[settings.mongo_database][settings.mongo_collection]
-    before_count = collection.count_documents({})
-else:
-    collector_path = settings.collector_output_path
-    if collector_path.exists():
-        before_count = sum(1 for _ in collector_path.open("r", encoding="utf-8"))
+mongo_client = MongoClient(settings.mongo_uri, tz_aware=True)
+collection = mongo_client[settings.mongo_database][settings.mongo_collection]
+before_count = collection.count_documents({})
 
 body = json.dumps(payload).encode("utf-8")
 signature = base64.b64encode(
@@ -119,31 +110,19 @@ except HTTPError as exc:
 
 after_count = 0
 latest_row = ""
+after_count = collection.count_documents({})
+latest_row = collection.find_one({"message_id": message_id})
+mongo_client.close()
 
-if settings.storage_backend == "mongo":
-    after_count = collection.count_documents({})
-    latest_row = collection.find_one({"message_id": message_id})
-    mongo_client.close()
+if latest_row is None:
+    print("MongoDB did not store the smoke test document.", file=sys.stderr)
+    raise SystemExit(1)
 
-    if latest_row is None:
-        print("MongoDB did not store the smoke test document.", file=sys.stderr)
-        raise SystemExit(1)
+if latest_row["url"] != test_url:
+    print("Stored MongoDB document does not contain the smoke test URL.", file=sys.stderr)
+    raise SystemExit(1)
 
-    if latest_row["url"] != test_url:
-        print("Stored MongoDB document does not contain the smoke test URL.", file=sys.stderr)
-        raise SystemExit(1)
-
-    latest_row = json.dumps(latest_row, default=str, ensure_ascii=False)
-else:
-    if collector_path.exists():
-        with collector_path.open("r", encoding="utf-8") as handle:
-            lines = handle.readlines()
-        after_count = len(lines)
-        latest_row = lines[-1].strip() if lines else ""
-
-    if test_url not in latest_row:
-        print("Latest collector row does not contain the smoke test URL.", file=sys.stderr)
-        raise SystemExit(1)
+latest_row = json.dumps(latest_row, default=str, ensure_ascii=False)
 
 if after_count != before_count + 1:
     print(
@@ -153,7 +132,6 @@ if after_count != before_count + 1:
     raise SystemExit(1)
 
 print("Webhook response:", response_body)
-print(f"Storage backend: {settings.storage_backend}")
 print(f"Stored rows: {before_count} -> {after_count}")
 print(f"Latest record: {latest_row}")
 PY

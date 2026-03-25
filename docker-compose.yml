@@ -8,7 +8,6 @@ services:
       - .env
     environment:
       APP_ENV: docker
-      STORAGE_BACKEND: mongo
       MONGO_URI: mongodb://mongo:27017
       MONGO_DATABASE: nihon_line_bot
       MONGO_COLLECTION: captured_lodging_links

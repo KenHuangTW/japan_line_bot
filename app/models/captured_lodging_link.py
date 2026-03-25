@@ -24,6 +24,4 @@ class CapturedLodgingLink(BaseModel):
     message_id: str | None = None
     event_timestamp_ms: int | None = None
     event_mode: str | None = None
-    captured_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
