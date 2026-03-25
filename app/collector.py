@@ -6,7 +6,9 @@ from app.config import Settings
 from app.controllers.repositories.captured_link_repository import (
     CapturedLinkRepository,
 )
-from app.models import MongoCapturedLinkRepository
+from app.controllers.repositories.mongo_captured_link_repository import (
+    MongoCapturedLinkRepository,
+)
 
 Collector = CapturedLinkRepository
 MongoCollector = MongoCapturedLinkRepository
