@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.collector import Collector, create_collector
 from app.config import Settings
 from app.line_client import HttpLineClient, LineClient, NoopLineClient
+from app.lodging_links import HttpLodgingUrlResolver, LodgingLinkService
 from app.routers import health_router, line_webhook_router
 
 
@@ -14,6 +15,7 @@ def create_app(
     settings: Settings | None = None,
     collector: Collector | None = None,
     line_client: LineClient | None = None,
+    lodging_link_service: LodgingLinkService | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.from_env()
     owned_resource = None
@@ -25,6 +27,9 @@ def create_app(
         HttpLineClient(active_settings.line_channel_access_token)
         if active_settings.line_channel_access_token
         else NoopLineClient()
+    )
+    active_lodging_link_service = lodging_link_service or LodgingLinkService(
+        HttpLodgingUrlResolver()
     )
 
     @asynccontextmanager
@@ -44,6 +49,7 @@ def create_app(
     app.state.collector = active_collector
     app.state.captured_link_repository = active_collector
     app.state.line_client = active_line_client
+    app.state.lodging_link_service = active_lodging_link_service
 
     app.include_router(health_router)
     app.include_router(line_webhook_router)
