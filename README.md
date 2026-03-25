@@ -24,7 +24,12 @@ app/
   models/
 Dockerfile
 docker-compose.yml
+mongo.ps1
 mongo.sh
+start.ps1
+start.sh
+test.ps1
+test.sh
 tests/
 ```
 
@@ -41,12 +46,24 @@ conda activate nihon-line-bot
 python3 -m pip install -e .[dev]
 ```
 
+Windows PowerShell 也可以直接安裝：
+
+```powershell
+python -m pip install -e '.[dev]'
+```
+
 ## 設定環境變數
 
 先複製一份設定檔：
 
 ```bash
 cp .env.example .env
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
 ```
 
 你至少要填這兩個值：
@@ -68,6 +85,12 @@ cp .env.example .env
 ./mongo.sh
 ```
 
+Windows PowerShell：
+
+```powershell
+.\mongo.ps1
+```
+
 你也可以看 log 或停止服務：
 
 ```bash
@@ -75,10 +98,23 @@ cp .env.example .env
 ./mongo.sh down
 ```
 
+Windows PowerShell：
+
+```powershell
+.\mongo.ps1 logs
+.\mongo.ps1 down
+```
+
 ## 啟動服務
 
 ```bash
 ./start.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\start.ps1
 ```
 
 健康檢查：
@@ -93,16 +129,43 @@ curl http://127.0.0.1:8000/healthz
 ./test.sh
 ```
 
+Windows PowerShell：
+
+```powershell
+.\test.ps1
+```
+
 如果你已經把本機服務跑起來，想直接做一筆 webhook smoke test：
 
 ```bash
 ./test.sh smoke
 ```
 
+Windows PowerShell：
+
+```powershell
+.\test.ps1 smoke
+```
+
 你也可以用環境變數改 host / port / conda env：
 
 ```bash
 HOST=0.0.0.0 PORT=8001 CONDA_ENV_NAME=nihon-line-bot ./start.sh
+```
+
+Windows PowerShell：
+
+```powershell
+$env:HOST = "0.0.0.0"
+$env:PORT = "8001"
+$env:CONDA_ENV_NAME = "nihon-line-bot"
+.\start.ps1
+```
+
+如果 PowerShell execution policy 擋住本機腳本，可以改用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
 ## 用 Docker Compose 跑整套服務
