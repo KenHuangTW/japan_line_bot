@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, Sequence
 
-from app.models.captured_lodging_link import CapturedLodgingLink
+from app.models import CapturedLodgingLink
 
 
 class InsertManyResult(Protocol):

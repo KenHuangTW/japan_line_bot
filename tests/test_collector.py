@@ -4,7 +4,10 @@ from datetime import datetime
 
 from app.collector import create_collector
 from app.config import Settings
-from app.models import CapturedLodgingLink, MongoCapturedLinkRepository
+from app.controllers.repositories.mongo_captured_link_repository import (
+    MongoCapturedLinkRepository,
+)
+from app.models import CapturedLodgingLink
 
 
 class FakeInsertManyResult:
