@@ -11,6 +11,14 @@ class LodgingLinkMatch(BaseModel):
     platform: str = Field(description="住宿平台識別，例如 booking 或 agoda。")
     url: str = Field(description="從訊息中擷取出的原始住宿連結。")
     hostname: str = Field(description="住宿連結對應的 hostname。")
+    resolved_url: str | None = Field(
+        default=None,
+        description="解析後可確認為住宿頁的最終連結。",
+    )
+    resolved_hostname: str | None = Field(
+        default=None,
+        description="解析後最終住宿連結對應的 hostname。",
+    )
 
 
 class CapturedLodgingLink(BaseModel):
@@ -19,6 +27,14 @@ class CapturedLodgingLink(BaseModel):
     platform: str = Field(description="住宿平台識別，例如 booking 或 agoda。")
     url: str = Field(description="從 LINE 訊息中擷取出的原始住宿連結。")
     hostname: str = Field(description="住宿連結對應的 hostname。")
+    resolved_url: str | None = Field(
+        default=None,
+        description="解析後可確認為住宿頁的最終連結。",
+    )
+    resolved_hostname: str | None = Field(
+        default=None,
+        description="解析後最終住宿連結對應的 hostname。",
+    )
     message_text: str = Field(description="使用者送出的原始文字訊息。")
     source_type: str = Field(description="LINE webhook source 類型，例如 group 或 room。")
     destination: str | None = Field(

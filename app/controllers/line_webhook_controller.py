@@ -8,6 +8,7 @@ from app.controllers.repositories.captured_link_repository import (
     CapturedLinkRepository,
 )
 from app.link_extractor import extract_lodging_links
+from app.lodging_links import LodgingLinkService
 from app.models import CapturedLodgingLink
 from app.schemas.line_webhook import LineWebhookRequest
 
@@ -30,6 +31,7 @@ async def process_events(
     settings: Settings,
     repository: CapturedLinkRepository,
     line_client: LineClient,
+    lodging_link_service: LodgingLinkService,
 ) -> int:
     captured_total = 0
 
@@ -53,7 +55,10 @@ async def process_events(
             continue
 
         text = event.message.text
-        link_matches = extract_lodging_links(text, settings.supported_domains)
+        extracted_matches = extract_lodging_links(text, settings.supported_domains)
+        link_matches = await lodging_link_service.filter_supported_lodging_links(
+            extracted_matches
+        )
         if not link_matches:
             continue
 
@@ -62,6 +67,8 @@ async def process_events(
                 platform=link.platform,
                 url=link.url,
                 hostname=link.hostname,
+                resolved_url=link.resolved_url,
+                resolved_hostname=link.resolved_hostname,
                 message_text=text,
                 source_type=event.source.type,
                 destination=payload.destination,

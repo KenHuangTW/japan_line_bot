@@ -10,6 +10,7 @@ from app.controllers.line_webhook_controller import process_events
 from app.controllers.repositories.captured_link_repository import (
     CapturedLinkRepository,
 )
+from app.lodging_links import LodgingLinkService
 from app.controllers.validators.line_webhook import (
     ensure_line_webhook_request_is_valid,
     parse_line_webhook_payload,
@@ -36,6 +37,10 @@ def _get_line_client(request: Request) -> LineClient:
     return cast(LineClient, request.app.state.line_client)
 
 
+def _get_lodging_link_service(request: Request) -> LodgingLinkService:
+    return cast(LodgingLinkService, request.app.state.lodging_link_service)
+
+
 @router.post("/webhooks/line", response_model=LineWebhookResponse)
 async def line_webhook(
     request: Request,
@@ -58,5 +63,6 @@ async def line_webhook(
         settings=settings,
         repository=_get_captured_link_repository(request),
         line_client=_get_line_client(request),
+        lodging_link_service=_get_lodging_link_service(request),
     )
     return LineWebhookResponse(ok=True, captured=captured)
