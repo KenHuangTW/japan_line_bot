@@ -8,6 +8,7 @@
 - 接收群組或私聊的文字訊息
 - 擷取 `booking.com` / `agoda.com` 連結
 - 把住宿連結寫進 MongoDB
+- 以 background job 解析住宿頁的地圖資訊
 - 成功擷取後回覆一則確認訊息
 
 ## 專案結構
@@ -168,6 +169,49 @@ $env:CONDA_ENV_NAME = "nihon-line-bot"
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
+## 執行地圖解析 job
+
+把已經收進 MongoDB 的住宿連結補上名稱、地址、座標與 Google Maps URL：
+
+```bash
+python -m app.map_enrichment_job
+```
+
+這支 command 適合掛進 cron，定期掃描 `map_status = pending` 的文件。
+
+可調整的環境變數：
+
+- `MAP_ENRICHMENT_BATCH_SIZE=20`
+- `MAP_ENRICHMENT_REQUEST_TIMEOUT=10.0`
+- `MAP_ENRICHMENT_MAX_RETRY_COUNT=3`
+
+## Swagger 觸發地圖解析
+
+如果你暫時不想設定 cron，可以直接開 Swagger 呼叫：
+
+- `GET /jobs/map-enrichment/documents`
+- `POST /jobs/map-enrichment/run`
+- `POST /jobs/map-enrichment/documents/{document_id}/retry`
+
+這兩支 API 的 200 response 會統一包成：
+
+```json
+{
+  "is_success": true,
+  "message": "string",
+  "data": {}
+}
+```
+
+建議驗證順序：
+
+1. 先用 `GET /jobs/map-enrichment/documents?status=pending&limit=20` 看目前待解析資料
+2. 再呼叫 `POST /jobs/map-enrichment/run`，可在 body 傳 `{"limit": 5}`
+3. 最後再用 `GET /jobs/map-enrichment/documents?status=resolved&limit=20` 看是否出現 `property_name`、`latitude`、`longitude`、`google_maps_url`、`map_source`
+4. 若只想重跑單筆文件，可直接呼叫 `POST /jobs/map-enrichment/documents/{document_id}/retry`
+
+如果資料解析失敗，可以用 `GET /jobs/map-enrichment/documents?status=failed&limit=20` 檢查 `map_error`
+
 ## 用 Docker Compose 跑整套服務
 
 如果你想一起啟動 server + MongoDB：
@@ -203,6 +247,12 @@ https://<your-domain>/webhooks/line
 - 平台
 - 原始連結
 - hostname
+- resolved_url / resolved_hostname
+- property_name / formatted_address
+- latitude / longitude
+- place_id
+- google_maps_url
+- map_status / map_source / map_error / map_retry_count
 - 原始訊息文字
 - 來源類型
 - groupId / roomId / userId

@@ -61,6 +61,9 @@ class Settings(BaseModel):
     )
     reply_capture_template: str = "已收到 {count} 筆住宿連結，先幫你記下來了。"
     supported_domains: tuple[str, ...] = Field(default=("booking.com", "agoda.com"))
+    map_enrichment_batch_size: int = 20
+    map_enrichment_request_timeout: float = 10.0
+    map_enrichment_max_retry_count: int = 3
 
     @property
     def is_line_secret_configured(self) -> bool:
@@ -102,5 +105,14 @@ class Settings(BaseModel):
             ),
             supported_domains=_env_csv(
                 "SUPPORTED_DOMAINS", ("booking.com", "agoda.com")
+            ),
+            map_enrichment_batch_size=int(
+                os.getenv("MAP_ENRICHMENT_BATCH_SIZE", "20")
+            ),
+            map_enrichment_request_timeout=float(
+                os.getenv("MAP_ENRICHMENT_REQUEST_TIMEOUT", "10.0")
+            ),
+            map_enrichment_max_retry_count=int(
+                os.getenv("MAP_ENRICHMENT_MAX_RETRY_COUNT", "3")
             ),
         )

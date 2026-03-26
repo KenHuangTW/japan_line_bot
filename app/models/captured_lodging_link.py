@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+MapStatus = Literal["pending", "resolved", "failed"]
 
 
 class LodgingLinkMatch(BaseModel):
@@ -34,6 +37,54 @@ class CapturedLodgingLink(BaseModel):
     resolved_hostname: str | None = Field(
         default=None,
         description="解析後最終住宿連結對應的 hostname。",
+    )
+    property_name: str | None = Field(
+        default=None,
+        description="解析住宿頁後得到的住宿名稱。",
+    )
+    formatted_address: str | None = Field(
+        default=None,
+        description="解析住宿頁後得到的格式化地址。",
+    )
+    latitude: float | None = Field(
+        default=None,
+        description="住宿地點緯度。",
+    )
+    longitude: float | None = Field(
+        default=None,
+        description="住宿地點經度。",
+    )
+    place_id: str | None = Field(
+        default=None,
+        description="Google Maps / Places 對應的 place_id，若尚未解析則為空。",
+    )
+    google_maps_url: str | None = Field(
+        default=None,
+        description="可直接開啟 Google Maps 的查詢連結。",
+    )
+    map_source: str | None = Field(
+        default=None,
+        description="地圖資訊來源，例如 structured_data_geo 或 structured_data_address。",
+    )
+    map_status: MapStatus = Field(
+        default="pending",
+        description="地圖資訊解析狀態。",
+    )
+    map_error: str | None = Field(
+        default=None,
+        description="地圖資訊解析失敗時的錯誤摘要。",
+    )
+    map_retry_count: int = Field(
+        default=0,
+        description="地圖資訊解析已重試次數。",
+    )
+    map_last_attempt_at: datetime | None = Field(
+        default=None,
+        description="最後一次嘗試解析地圖資訊的 UTC 時間。",
+    )
+    map_resolved_at: datetime | None = Field(
+        default=None,
+        description="成功解析地圖資訊的 UTC 時間。",
     )
     message_text: str = Field(description="使用者送出的原始文字訊息。")
     source_type: str = Field(description="LINE webhook source 類型，例如 group 或 room。")
