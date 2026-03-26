@@ -9,16 +9,12 @@ def build_google_maps_url(
     *,
     latitude: float | None = None,
     longitude: float | None = None,
-    query: str | None = None,
     place_id: str | None = None,
 ) -> str | None:
-    if latitude is not None and longitude is not None:
-        query_value = f"{latitude},{longitude}"
-    else:
-        query_value = (query or "").strip()
-
-    if not query_value:
+    if latitude is None or longitude is None:
         return None
+
+    query_value = f"{latitude},{longitude}"
 
     params = {
         "api": "1",

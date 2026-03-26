@@ -63,11 +63,8 @@ class LodgingMapEnrichmentService:
         google_maps_url = build_google_maps_url(
             latitude=parsed.latitude,
             longitude=parsed.longitude,
-            query=parsed.formatted_address or parsed.property_name,
             place_id=parsed.place_id,
         )
-        if google_maps_url is None:
-            return None
 
         return EnrichedLodgingMap(
             resolved_url=target_url,

@@ -60,7 +60,7 @@ class CapturedLodgingLink(BaseModel):
     )
     google_maps_url: str | None = Field(
         default=None,
-        description="可直接開啟 Google Maps 的查詢連結。",
+        description="以經緯度開啟 Google Maps 的定位連結；若尚未取得座標則為空。",
     )
     map_source: str | None = Field(
         default=None,
