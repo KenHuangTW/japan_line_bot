@@ -9,6 +9,7 @@ from app.config import Settings
 from app.line_client import HttpLineClient, LineClient, NoopLineClient
 from app.lodging_links import HttpLodgingUrlResolver, LodgingLinkService
 from app.map_enrichment import (
+    BankOfTaiwanTwdPriceConverter,
     HttpLodgingPageFetcher,
     LodgingMapEnrichmentService,
     MapEnrichmentRepository,
@@ -42,6 +43,9 @@ def create_app(
     active_map_enrichment_service = map_enrichment_service or LodgingMapEnrichmentService(
         HttpLodgingPageFetcher(active_settings.map_enrichment_request_timeout),
         HttpLodgingUrlResolver(active_settings.map_enrichment_request_timeout),
+        BankOfTaiwanTwdPriceConverter(
+            timeout=active_settings.map_enrichment_request_timeout
+        ),
     )
     if map_enrichment_repository is not None:
         active_map_enrichment_repository = map_enrichment_repository
