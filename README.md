@@ -169,15 +169,15 @@ $env:CONDA_ENV_NAME = "nihon-line-bot"
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-## 執行地圖解析 job
+## 執行住宿 enrichment job
 
-把已經收進 MongoDB 的住宿連結補上名稱、地址、座標，以及 Google Maps 精準定位 / 搜尋備援連結：
+把已經收進 MongoDB 的住宿連結補上名稱、地址、結構化地理欄位、房型細節、設備、頁面價格，以及 Google Maps 精準定位 / 搜尋備援連結：
 
 ```bash
 python -m app.map_enrichment_job
 ```
 
-這支 command 適合掛進 cron，定期掃描 `map_status = pending` 的文件。
+這支 command 適合掛進 cron，定期掃描 `map_status = pending` 的文件；同一次執行會一併更新地理、細節與價格欄位。
 
 可調整的環境變數：
 
@@ -185,13 +185,16 @@ python -m app.map_enrichment_job
 - `MAP_ENRICHMENT_REQUEST_TIMEOUT=10.0`
 - `MAP_ENRICHMENT_MAX_RETRY_COUNT=3`
 
-## Swagger 觸發地圖解析
+## Swagger 觸發住宿 enrichment
 
 如果你暫時不想設定 cron，可以直接開 Swagger 呼叫：
 
-- `GET /jobs/map-enrichment/documents`
-- `POST /jobs/map-enrichment/run`
-- `POST /jobs/map-enrichment/documents/{document_id}/retry`
+- `GET /jobs/lodging-enrichment/documents`
+- `POST /jobs/lodging-enrichment/run`
+- `POST /jobs/lodging-enrichment/documents/retry-all`
+- `POST /jobs/lodging-enrichment/documents/{document_id}/retry`
+
+舊的 `/jobs/map-enrichment/*` 路徑仍可使用，但 Swagger 會以新的 `/jobs/lodging-enrichment/*` 為主。
 
 這兩支 API 的 200 response 會統一包成：
 
@@ -205,14 +208,15 @@ python -m app.map_enrichment_job
 
 建議驗證順序：
 
-1. 先用 `GET /jobs/map-enrichment/documents?status=pending&limit=20` 看目前待解析資料
-2. 再呼叫 `POST /jobs/map-enrichment/run`，可在 body 傳 `{"limit": 5}`
-3. 最後再用 `GET /jobs/map-enrichment/documents?status=resolved&limit=20` 或 `status=partial` 看是否出現 `property_name`、`latitude`、`longitude`、`google_maps_url`、`google_maps_search_url`、`map_source`
-4. 若只想重跑單筆文件，可直接呼叫 `POST /jobs/map-enrichment/documents/{document_id}/retry`
+1. 先用 `GET /jobs/lodging-enrichment/documents?status=pending&limit=20` 看目前待解析資料
+2. 再呼叫 `POST /jobs/lodging-enrichment/run`，可在 body 傳 `{"limit": 5}`
+3. 最後再用 `GET /jobs/lodging-enrichment/documents?status=resolved&limit=20` 或 `status=partial` 看是否出現 `property_name`、`country_code`、`city`、`amenities`、`price_amount`、`google_maps_url`
+4. 若想手動重跑所有文件，不看目前狀態，可呼叫 `POST /jobs/lodging-enrichment/documents/retry-all`
+5. 若只想重跑單筆文件，可直接呼叫 `POST /jobs/lodging-enrichment/documents/{document_id}/retry`
 
 `map_status = resolved` 代表已拿到精準座標；`map_status = partial` 代表目前只有住宿名稱或地址，尚未能精準定位。
 
-如果資料解析失敗，可以用 `GET /jobs/map-enrichment/documents?status=failed&limit=20` 檢查 `map_error`
+如果資料解析失敗，可以用 `GET /jobs/lodging-enrichment/documents?status=failed&limit=20` 檢查 `map_error`
 
 ## 用 Docker Compose 跑整套服務
 
@@ -251,10 +255,17 @@ https://<your-domain>/webhooks/line
 - hostname
 - resolved_url / resolved_hostname
 - property_name / formatted_address
+- street_address / district / city / region / postal_code / country_name / country_code
 - latitude / longitude
+- property_type / room_count / bedroom_count / bathroom_count / amenities
+- price_amount / price_currency
+- source_price_amount / source_price_currency / price_exchange_rate / price_exchange_rate_source
+- is_sold_out / availability_source
 - place_id
 - google_maps_url / google_maps_search_url
 - map_status / map_source / map_error / map_retry_count
+- details_status / details_source / details_error / details_retry_count
+- pricing_status / pricing_source / pricing_error / pricing_retry_count
 - 原始訊息文字
 - 來源類型
 - groupId / roomId / userId

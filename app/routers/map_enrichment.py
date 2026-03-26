@@ -9,6 +9,7 @@ from app.controllers.map_enrichment_controller import (
     build_map_enrichment_documents_response,
     retry_map_enrichment_document,
     trigger_map_enrichment_run,
+    trigger_retry_all_map_enrichment_run,
 )
 from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
 from app.schemas.base import BaseResponse
@@ -19,7 +20,7 @@ from app.schemas.map_enrichment import (
     MapEnrichmentRunResponse,
 )
 
-router = APIRouter(prefix="/jobs/map-enrichment", tags=["map-enrichment"])
+router = APIRouter(tags=["lodging-enrichment"])
 
 
 def _get_settings(request: Request) -> Settings:
@@ -55,7 +56,15 @@ def _require_dependencies(
     return repository, service
 
 
-@router.post("/run", response_model=BaseResponse[MapEnrichmentRunResponse])
+@router.post(
+    "/jobs/lodging-enrichment/run",
+    response_model=BaseResponse[MapEnrichmentRunResponse],
+)
+@router.post(
+    "/jobs/map-enrichment/run",
+    response_model=BaseResponse[MapEnrichmentRunResponse],
+    include_in_schema=False,
+)
 async def run_map_enrichment(
     request: Request,
     payload: MapEnrichmentRunRequest | None = Body(default=None),
@@ -69,7 +78,7 @@ async def run_map_enrichment(
     )
     return BaseResponse(
         is_success=True,
-        message="Map enrichment job finished.",
+        message="Lodging enrichment job finished.",
         data=await trigger_map_enrichment_run(
             repository=repository,
             service=service,
@@ -79,8 +88,13 @@ async def run_map_enrichment(
 
 
 @router.get(
-    "/documents",
+    "/jobs/lodging-enrichment/documents",
     response_model=BaseResponse[MapEnrichmentDocumentsResponse],
+)
+@router.get(
+    "/jobs/map-enrichment/documents",
+    response_model=BaseResponse[MapEnrichmentDocumentsResponse],
+    include_in_schema=False,
 )
 async def list_map_enrichment_documents(
     request: Request,
@@ -96,7 +110,7 @@ async def list_map_enrichment_documents(
 
     return BaseResponse(
         is_success=True,
-        message="Fetched map enrichment documents.",
+        message="Fetched lodging enrichment documents.",
         data=build_map_enrichment_documents_response(
             repository=repository,
             limit=limit,
@@ -106,8 +120,39 @@ async def list_map_enrichment_documents(
 
 
 @router.post(
-    "/documents/{document_id}/retry",
+    "/jobs/lodging-enrichment/documents/retry-all",
+    response_model=BaseResponse[MapEnrichmentRunResponse],
+)
+@router.post(
+    "/jobs/map-enrichment/documents/retry-all",
+    response_model=BaseResponse[MapEnrichmentRunResponse],
+    include_in_schema=False,
+)
+async def retry_all_map_enrichment_documents(
+    request: Request,
+    payload: MapEnrichmentRunRequest | None = Body(default=None),
+) -> BaseResponse[MapEnrichmentRunResponse]:
+    repository, service = _require_dependencies(request)
+    limit = payload.limit if payload and payload.limit is not None else None
+    return BaseResponse(
+        is_success=True,
+        message="Lodging enrichment bulk retry finished.",
+        data=await trigger_retry_all_map_enrichment_run(
+            repository=repository,
+            service=service,
+            limit=limit,
+        ),
+    )
+
+
+@router.post(
+    "/jobs/lodging-enrichment/documents/{document_id}/retry",
     response_model=BaseResponse[MapEnrichmentRetryResponse],
+)
+@router.post(
+    "/jobs/map-enrichment/documents/{document_id}/retry",
+    response_model=BaseResponse[MapEnrichmentRetryResponse],
+    include_in_schema=False,
 )
 async def retry_map_enrichment_by_document_id(
     request: Request,
@@ -127,6 +172,6 @@ async def retry_map_enrichment_by_document_id(
 
     return BaseResponse(
         is_success=True,
-        message="Map enrichment retry finished.",
+        message="Lodging enrichment retry finished.",
         data=result,
     )

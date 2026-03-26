@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import Sequence
 
-from app.map_enrichment.job import run_map_enrichment_job
+from app.map_enrichment.job import (
+    retry_all_map_enrichment_documents,
+    run_map_enrichment_job,
+)
 from app.map_enrichment.models import (
     EnrichedLodgingMap,
     MapEnrichmentCandidate,
@@ -17,6 +20,14 @@ class InMemoryMapEnrichmentRepository:
         self.failed: dict[str, str] = {}
 
     def find_pending(self, limit: int) -> Sequence[MapEnrichmentCandidate]:
+        return self.items[:limit]
+
+    def find_all(self, limit: int | None = None) -> Sequence[MapEnrichmentCandidate]:
+        if limit is None:
+            return self.items
+        return self.items[:limit]
+
+    def find_failed(self, limit: int) -> Sequence[MapEnrichmentCandidate]:
         return self.items[:limit]
 
     def mark_resolved(
@@ -64,6 +75,10 @@ def test_run_map_enrichment_job_marks_resolved_and_failed_documents() -> None:
                 property_name="Hotel Resol Ueno",
                 latitude=35.712345,
                 longitude=139.778901,
+                property_type="hotel",
+                amenities=("Free WiFi",),
+                price_amount=18000,
+                price_currency="JPY",
                 google_maps_url=(
                     "https://www.google.com/maps/search/?api=1"
                     "&query=35.712345%2C139.778901"
@@ -86,6 +101,8 @@ def test_run_map_enrichment_job_marks_resolved_and_failed_documents() -> None:
     assert summary.processed == 3
     assert summary.resolved == 1
     assert summary.partial == 0
+    assert summary.details_resolved == 1
+    assert summary.pricing_resolved == 1
     assert summary.failed == 2
     assert repository.resolved["doc-1"].property_name == "Hotel Resol Ueno"
     assert "doc-2" in repository.failed
@@ -123,5 +140,65 @@ def test_run_map_enrichment_job_marks_partial_when_only_search_metadata_exists()
     assert summary.processed == 1
     assert summary.resolved == 0
     assert summary.partial == 1
+    assert summary.details_resolved == 0
+    assert summary.pricing_resolved == 0
     assert summary.failed == 0
     assert repository.resolved["doc-1"].google_maps_search_url is not None
+
+
+def test_retry_all_map_enrichment_documents_processes_all_candidates() -> None:
+    failed_url = "https://www.booking.com/hotel/jp/retry-me.html"
+    resolved_url = "https://www.booking.com/hotel/jp/already-resolved.html"
+    repository = InMemoryMapEnrichmentRepository(
+        [
+            MapEnrichmentCandidate("doc-failed", failed_url),
+            MapEnrichmentCandidate("doc-resolved", resolved_url),
+        ]
+    )
+    service = FakeMapEnrichmentService(
+        results={
+            failed_url: EnrichedLodgingMap(
+                property_name="Retry Hotel",
+                latitude=35.1,
+                longitude=139.2,
+                property_type="hotel",
+                price_amount=12000,
+                price_currency="JPY",
+                google_maps_url=(
+                    "https://www.google.com/maps/search/?api=1"
+                    "&query=35.1%2C139.2"
+                ),
+                map_source="structured_data_geo",
+            ),
+            resolved_url: EnrichedLodgingMap(
+                property_name="Still Good Hotel",
+                latitude=35.2,
+                longitude=139.3,
+                property_type="hotel",
+                amenities=("Breakfast",),
+                price_amount=15000,
+                price_currency="JPY",
+                google_maps_url=(
+                    "https://www.google.com/maps/search/?api=1"
+                    "&query=35.2%2C139.3"
+                ),
+                map_source="structured_data_geo",
+            ),
+        }
+    )
+
+    summary = asyncio.run(
+        retry_all_map_enrichment_documents(
+            repository=repository,
+            service=service,
+        )
+    )
+
+    assert summary.processed == 2
+    assert summary.resolved == 2
+    assert summary.partial == 0
+    assert summary.details_resolved == 2
+    assert summary.pricing_resolved == 2
+    assert summary.failed == 0
+    assert repository.resolved["doc-failed"].property_name == "Retry Hotel"
+    assert repository.resolved["doc-resolved"].property_name == "Still Good Hotel"

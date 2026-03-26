@@ -46,6 +46,34 @@ class CapturedLodgingLink(BaseModel):
         default=None,
         description="解析住宿頁後得到的格式化地址。",
     )
+    street_address: str | None = Field(
+        default=None,
+        description="結構化後的街道地址。",
+    )
+    district: str | None = Field(
+        default=None,
+        description="結構化後的區域資訊，例如 ward 或 district。",
+    )
+    city: str | None = Field(
+        default=None,
+        description="結構化後的城市名稱。",
+    )
+    region: str | None = Field(
+        default=None,
+        description="結構化後的州 / 省 / 都道府縣資訊。",
+    )
+    postal_code: str | None = Field(
+        default=None,
+        description="結構化後的郵遞區號。",
+    )
+    country_name: str | None = Field(
+        default=None,
+        description="結構化後的國家名稱。",
+    )
+    country_code: str | None = Field(
+        default=None,
+        description="結構化後的國家代碼，例如 JP。",
+    )
     latitude: float | None = Field(
         default=None,
         description="住宿地點緯度。",
@@ -89,6 +117,106 @@ class CapturedLodgingLink(BaseModel):
     map_resolved_at: datetime | None = Field(
         default=None,
         description="成功解析地圖資訊的 UTC 時間。",
+    )
+    property_type: str | None = Field(
+        default=None,
+        description="住宿類型，例如 hotel 或 vacationrental。",
+    )
+    room_count: int | None = Field(
+        default=None,
+        description="住宿頁標示的總房間數。",
+    )
+    bedroom_count: int | None = Field(
+        default=None,
+        description="住宿頁標示的臥室數量。",
+    )
+    bathroom_count: float | None = Field(
+        default=None,
+        description="住宿頁標示的衛浴數量。",
+    )
+    amenities: list[str] = Field(
+        default_factory=list,
+        description="住宿頁標示的設備清單。",
+    )
+    details_source: str | None = Field(
+        default=None,
+        description="住宿細節資訊來源。",
+    )
+    details_status: MapStatus = Field(
+        default="pending",
+        description="住宿細節解析狀態。",
+    )
+    details_error: str | None = Field(
+        default=None,
+        description="住宿細節解析失敗時的錯誤摘要。",
+    )
+    details_retry_count: int = Field(
+        default=0,
+        description="住宿細節解析已重試次數。",
+    )
+    details_last_attempt_at: datetime | None = Field(
+        default=None,
+        description="最後一次嘗試解析住宿細節的 UTC 時間。",
+    )
+    details_resolved_at: datetime | None = Field(
+        default=None,
+        description="成功解析住宿細節的 UTC 時間。",
+    )
+    price_amount: float | None = Field(
+        default=None,
+        description="轉換後用於顯示的價格數值。",
+    )
+    price_currency: str | None = Field(
+        default=None,
+        description="轉換後用於顯示的價格幣別。",
+    )
+    source_price_amount: float | None = Field(
+        default=None,
+        description="住宿頁原始揭露的價格數值。",
+    )
+    source_price_currency: str | None = Field(
+        default=None,
+        description="住宿頁原始揭露的價格幣別。",
+    )
+    price_exchange_rate: float | None = Field(
+        default=None,
+        description="將原始幣別轉為顯示幣別時使用的匯率。",
+    )
+    price_exchange_rate_source: str | None = Field(
+        default=None,
+        description="顯示幣別匯率來源。",
+    )
+    is_sold_out: bool | None = Field(
+        default=None,
+        description="住宿是否已售完。null 代表目前無法判定。",
+    )
+    availability_source: str | None = Field(
+        default=None,
+        description="售完狀態判斷來源。",
+    )
+    pricing_source: str | None = Field(
+        default=None,
+        description="價格資訊來源。",
+    )
+    pricing_status: MapStatus = Field(
+        default="pending",
+        description="價格資訊解析狀態。",
+    )
+    pricing_error: str | None = Field(
+        default=None,
+        description="價格資訊解析失敗時的錯誤摘要。",
+    )
+    pricing_retry_count: int = Field(
+        default=0,
+        description="價格資訊解析已重試次數。",
+    )
+    pricing_last_attempt_at: datetime | None = Field(
+        default=None,
+        description="最後一次嘗試解析價格資訊的 UTC 時間。",
+    )
+    pricing_resolved_at: datetime | None = Field(
+        default=None,
+        description="成功解析價格資訊的 UTC 時間。",
     )
     message_text: str = Field(description="使用者送出的原始文字訊息。")
     source_type: str = Field(description="LINE webhook source 類型，例如 group 或 room。")
