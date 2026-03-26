@@ -17,6 +17,7 @@ class MapEnrichmentRunRequest(BaseModel):
 class MapEnrichmentRunResponse(BaseModel):
     processed: int
     resolved: int
+    partial: int
     failed: int
     limit_used: int
 
@@ -25,6 +26,7 @@ class MapEnrichmentRetryResponse(BaseModel):
     document_id: str
     processed: int
     resolved: int
+    partial: int
     failed: int
 
 
@@ -39,6 +41,7 @@ class MapEnrichmentDocumentResponse(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     google_maps_url: str | None = None
+    google_maps_search_url: str | None = None
     map_error: str | None = None
     map_retry_count: int = 0
     captured_at: datetime | None = None

@@ -28,6 +28,7 @@ async def trigger_map_enrichment_run(
     return MapEnrichmentRunResponse(
         processed=summary.processed,
         resolved=summary.resolved,
+        partial=summary.partial,
         failed=summary.failed,
         limit_used=limit,
     )
@@ -50,6 +51,7 @@ async def retry_map_enrichment_document(
             document_id=document_id,
             processed=1,
             resolved=0,
+            partial=0,
             failed=1,
         )
 
@@ -62,6 +64,7 @@ async def retry_map_enrichment_document(
             document_id=document_id,
             processed=1,
             resolved=0,
+            partial=0,
             failed=1,
         )
 
@@ -69,7 +72,8 @@ async def retry_map_enrichment_document(
     return MapEnrichmentRetryResponse(
         document_id=document_id,
         processed=1,
-        resolved=1,
+        resolved=1 if enrichment.has_coordinates else 0,
+        partial=0 if enrichment.has_coordinates else 1,
         failed=0,
     )
 
@@ -92,6 +96,7 @@ def build_map_enrichment_documents_response(
             latitude=item.latitude,
             longitude=item.longitude,
             google_maps_url=item.google_maps_url,
+            google_maps_search_url=item.google_maps_search_url,
             map_error=item.map_error,
             map_retry_count=item.map_retry_count,
             captured_at=item.captured_at,

@@ -2,7 +2,10 @@ from app.map_enrichment.agoda import (
     extract_agoda_secondary_data_url,
     parse_agoda_secondary_data,
 )
-from app.map_enrichment.google_maps import build_google_maps_url
+from app.map_enrichment.google_maps import (
+    build_google_maps_search_url,
+    build_google_maps_url,
+)
 from app.map_enrichment.html_parser import parse_lodging_map, parse_lodging_map_from_url
 from app.map_enrichment.job import (
     MapEnrichmentRepository,
@@ -25,6 +28,7 @@ from app.map_enrichment.service import (
 __all__ = [
     "extract_agoda_secondary_data_url",
     "parse_agoda_secondary_data",
+    "build_google_maps_search_url",
     "build_google_maps_url",
     "parse_lodging_map",
     "parse_lodging_map_from_url",

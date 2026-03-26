@@ -13,7 +13,10 @@ from app.map_enrichment.agoda import (
     extract_agoda_secondary_data_url,
     parse_agoda_secondary_data,
 )
-from app.map_enrichment.google_maps import build_google_maps_url
+from app.map_enrichment.google_maps import (
+    build_google_maps_search_url,
+    build_google_maps_url,
+)
 from app.map_enrichment.html_parser import (
     parse_lodging_map,
     parse_lodging_map_from_url,
@@ -63,11 +66,12 @@ class LodgingMapEnrichmentService:
         google_maps_url = build_google_maps_url(
             latitude=parsed.latitude,
             longitude=parsed.longitude,
+            place_id=parsed.place_id,
+        )
+        google_maps_search_url = build_google_maps_search_url(
             query=parsed.formatted_address or parsed.property_name,
             place_id=parsed.place_id,
         )
-        if google_maps_url is None:
-            return None
 
         return EnrichedLodgingMap(
             resolved_url=target_url,
@@ -78,6 +82,7 @@ class LodgingMapEnrichmentService:
             longitude=parsed.longitude,
             place_id=parsed.place_id,
             google_maps_url=google_maps_url,
+            google_maps_search_url=google_maps_search_url,
             map_source=parsed.map_source,
         )
 

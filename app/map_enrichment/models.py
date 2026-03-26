@@ -25,7 +25,12 @@ class EnrichedLodgingMap:
     longitude: float | None = None
     place_id: str | None = None
     google_maps_url: str | None = None
+    google_maps_search_url: str | None = None
     map_source: str | None = None
+
+    @property
+    def has_coordinates(self) -> bool:
+        return self.latitude is not None and self.longitude is not None
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ class MapEnrichmentDocument:
     latitude: float | None = None
     longitude: float | None = None
     google_maps_url: str | None = None
+    google_maps_search_url: str | None = None
     map_error: str | None = None
     map_retry_count: int = 0
     captured_at: datetime | None = None

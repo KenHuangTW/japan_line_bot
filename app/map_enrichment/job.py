@@ -138,6 +138,7 @@ class MongoMapEnrichmentRepository:
                     latitude=document.get("latitude"),
                     longitude=document.get("longitude"),
                     google_maps_url=document.get("google_maps_url"),
+                    google_maps_search_url=document.get("google_maps_search_url"),
                     map_error=document.get("map_error"),
                     map_retry_count=document.get("map_retry_count", 0),
                     captured_at=document.get("captured_at"),
@@ -152,6 +153,7 @@ class MongoMapEnrichmentRepository:
         enrichment: EnrichedLodgingMap,
     ) -> None:
         now = datetime.now(timezone.utc)
+        map_status = "resolved" if enrichment.has_coordinates else "partial"
         self.collection.update_one(
             {"_id": document_id},
             {
@@ -164,8 +166,9 @@ class MongoMapEnrichmentRepository:
                     "longitude": enrichment.longitude,
                     "place_id": enrichment.place_id,
                     "google_maps_url": enrichment.google_maps_url,
+                    "google_maps_search_url": enrichment.google_maps_search_url,
                     "map_source": enrichment.map_source,
-                    "map_status": "resolved",
+                    "map_status": map_status,
                     "map_error": None,
                     "map_retry_count": 0,
                     "map_last_attempt_at": now,
@@ -194,6 +197,7 @@ class MongoMapEnrichmentRepository:
 class MapEnrichmentSummary:
     processed: int = 0
     resolved: int = 0
+    partial: int = 0
     failed: int = 0
 
 
@@ -216,6 +220,7 @@ async def run_map_enrichment_job(
 ) -> MapEnrichmentSummary:
     processed = 0
     resolved = 0
+    partial = 0
     failed = 0
 
     for candidate in repository.find_pending(limit):
@@ -236,11 +241,15 @@ async def run_map_enrichment_job(
             continue
 
         repository.mark_resolved(candidate.document_id, enrichment)
-        resolved += 1
+        if enrichment.has_coordinates:
+            resolved += 1
+        else:
+            partial += 1
 
     return MapEnrichmentSummary(
         processed=processed,
         resolved=resolved,
+        partial=partial,
         failed=failed,
     )
 
@@ -280,6 +289,7 @@ def main() -> int:
         "Map enrichment job finished: "
         f"processed={summary.processed} "
         f"resolved={summary.resolved} "
+        f"partial={summary.partial} "
         f"failed={summary.failed}"
     )
     return 0

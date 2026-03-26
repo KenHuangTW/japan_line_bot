@@ -79,8 +79,9 @@ def test_lodging_map_enrichment_service_falls_back_to_address_query() -> None:
     assert enriched is not None
     assert enriched.latitude is None
     assert enriched.longitude is None
-    assert enriched.google_maps_url is not None
-    query = parse_qs(urlsplit(enriched.google_maps_url).query)
+    assert enriched.google_maps_url is None
+    assert enriched.google_maps_search_url is not None
+    query = parse_qs(urlsplit(enriched.google_maps_search_url).query)
     assert query["query"] == ["1-2-3 Sakae, Nagoya, JP"]
 
 
@@ -102,8 +103,9 @@ def test_lodging_map_enrichment_service_falls_back_to_url_slug_when_page_is_bloc
     assert enriched is not None
     assert enriched.property_name == "Nagoya Marriott Associa"
     assert enriched.map_source == "url_slug_fallback"
-    assert enriched.google_maps_url is not None
-    query = parse_qs(urlsplit(enriched.google_maps_url).query)
+    assert enriched.google_maps_url is None
+    assert enriched.google_maps_search_url is not None
+    query = parse_qs(urlsplit(enriched.google_maps_search_url).query)
     assert query["query"] == ["Nagoya Marriott Associa"]
 
 
@@ -131,7 +133,9 @@ def test_lodging_map_enrichment_service_uses_booking_header_address_when_availab
         "1-1-4 Meieki, Nakamura-ku, Nagoya, Aichi, 450-6002, Japan"
     )
     assert enriched.map_source == "booking_header_address"
-    query = parse_qs(urlsplit(enriched.google_maps_url).query)
+    assert enriched.google_maps_url is None
+    assert enriched.google_maps_search_url is not None
+    query = parse_qs(urlsplit(enriched.google_maps_search_url).query)
     assert query["query"] == [
         "1-1-4 Meieki, Nakamura-ku, Nagoya, Aichi, 450-6002, Japan"
     ]
