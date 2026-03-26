@@ -108,6 +108,9 @@ def test_line_webhook_captures_links_and_replies() -> None:
     assert [item.platform for item in repository.items] == ["booking", "agoda"]
     assert repository.items[0].resolved_url == repository.items[0].url
     assert repository.items[1].resolved_url == repository.items[1].url
+    assert all(item.map_status == "pending" for item in repository.items)
+    assert all(item.map_retry_count == 0 for item in repository.items)
+    assert all(item.google_maps_url is None for item in repository.items)
     assert all(item.group_id == "Cgroup123" for item in repository.items)
     assert fake_line_client.calls == [
         ("reply-token", "已收到 2 筆住宿連結，先幫你記下來了。")
