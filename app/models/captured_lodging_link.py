@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-MapStatus = Literal["pending", "resolved", "failed"]
+MapStatus = Literal["pending", "resolved", "partial", "failed"]
 
 
 class LodgingLinkMatch(BaseModel):
@@ -60,7 +60,11 @@ class CapturedLodgingLink(BaseModel):
     )
     google_maps_url: str | None = Field(
         default=None,
-        description="以經緯度開啟 Google Maps 的定位連結；若尚未取得座標則為空。",
+        description="以經緯度開啟 Google Maps 的精準定位連結；若尚未取得座標則為空。",
+    )
+    google_maps_search_url: str | None = Field(
+        default=None,
+        description="以住宿名稱或地址搜尋 Google Maps 的備援連結。",
     )
     map_source: str | None = Field(
         default=None,

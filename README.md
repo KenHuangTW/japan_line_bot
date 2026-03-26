@@ -171,7 +171,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 ## 執行地圖解析 job
 
-把已經收進 MongoDB 的住宿連結補上名稱、地址、座標，以及可用時的 Google Maps 定位連結：
+把已經收進 MongoDB 的住宿連結補上名稱、地址、座標，以及 Google Maps 精準定位 / 搜尋備援連結：
 
 ```bash
 python -m app.map_enrichment_job
@@ -207,10 +207,10 @@ python -m app.map_enrichment_job
 
 1. 先用 `GET /jobs/map-enrichment/documents?status=pending&limit=20` 看目前待解析資料
 2. 再呼叫 `POST /jobs/map-enrichment/run`，可在 body 傳 `{"limit": 5}`
-3. 最後再用 `GET /jobs/map-enrichment/documents?status=resolved&limit=20` 看是否出現 `property_name`、`latitude`、`longitude`、`google_maps_url`、`map_source`
+3. 最後再用 `GET /jobs/map-enrichment/documents?status=resolved&limit=20` 或 `status=partial` 看是否出現 `property_name`、`latitude`、`longitude`、`google_maps_url`、`google_maps_search_url`、`map_source`
 4. 若只想重跑單筆文件，可直接呼叫 `POST /jobs/map-enrichment/documents/{document_id}/retry`
 
-`google_maps_url` 現在只會在 `latitude` 與 `longitude` 都存在時回傳；如果只解析到名稱或地址，該欄位會是 `null`。
+`map_status = resolved` 代表已拿到精準座標；`map_status = partial` 代表目前只有住宿名稱或地址，尚未能精準定位。
 
 如果資料解析失敗，可以用 `GET /jobs/map-enrichment/documents?status=failed&limit=20` 檢查 `map_error`
 
@@ -253,7 +253,7 @@ https://<your-domain>/webhooks/line
 - property_name / formatted_address
 - latitude / longitude
 - place_id
-- google_maps_url
+- google_maps_url / google_maps_search_url
 - map_status / map_source / map_error / map_retry_count
 - 原始訊息文字
 - 來源類型

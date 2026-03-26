@@ -36,6 +36,7 @@ class InMemoryMapEnrichmentRepository:
                 map_source="structured_data_geo",
                 property_name="Existing Hotel",
                 google_maps_url="https://www.google.com/maps/search/?api=1&query=foo",
+                google_maps_search_url="https://www.google.com/maps/search/?api=1&query=foo",
                 map_retry_count=0,
                 captured_at=datetime(2026, 3, 24, tzinfo=timezone.utc),
             ),
@@ -77,13 +78,14 @@ class InMemoryMapEnrichmentRepository:
             document_id=current.document_id,
             url=current.url,
             resolved_url=enrichment.resolved_url or current.resolved_url,
-            map_status="resolved",
+            map_status="resolved" if enrichment.has_coordinates else "partial",
             map_source=enrichment.map_source,
             property_name=enrichment.property_name,
             formatted_address=enrichment.formatted_address,
             latitude=enrichment.latitude,
             longitude=enrichment.longitude,
             google_maps_url=enrichment.google_maps_url,
+            google_maps_search_url=enrichment.google_maps_search_url,
             map_error=None,
             map_retry_count=0,
             captured_at=current.captured_at,
@@ -122,6 +124,10 @@ class FakeMapEnrichmentService:
             google_maps_url=(
                 "https://www.google.com/maps/search/?api=1"
                 "&query=35.712345%2C139.778901"
+            ),
+            google_maps_search_url=(
+                "https://www.google.com/maps/search/?api=1"
+                "&query=7-2-9+Ueno%2C+Taito+City%2C+Tokyo%2C+JP"
             ),
             map_source="structured_data_geo",
         )
@@ -171,6 +177,7 @@ def test_map_enrichment_run_endpoint_processes_pending_documents() -> None:
         "data": {
             "processed": 1,
             "resolved": 1,
+            "partial": 0,
             "failed": 0,
             "limit_used": 5,
         },
@@ -188,6 +195,7 @@ def test_map_enrichment_run_endpoint_processes_pending_documents() -> None:
     assert pending_document["map_status"] == "resolved"
     assert pending_document["property_name"] == "Hotel Resol Ueno"
     assert pending_document["google_maps_url"] is not None
+    assert pending_document["google_maps_search_url"] is not None
 
 
 def test_map_enrichment_retry_endpoint_processes_single_document() -> None:
@@ -222,8 +230,53 @@ def test_map_enrichment_retry_endpoint_processes_single_document() -> None:
             "document_id": "doc-pending",
             "processed": 1,
             "resolved": 1,
+            "partial": 0,
             "failed": 0,
         },
     }
     assert service.calls == ["https://www.booking.com/hotel/jp/resol.html"]
     assert repository.documents["doc-pending"].map_status == "resolved"
+
+
+class PartialOnlyMapEnrichmentService:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def enrich(self, url: str) -> EnrichedLodgingMap | None:
+        self.calls.append(url)
+        return EnrichedLodgingMap(
+            property_name="Hotel Resol Ueno",
+            formatted_address="7-2-9 Ueno, Taito City, Tokyo, JP",
+            google_maps_search_url=(
+                "https://www.google.com/maps/search/?api=1"
+                "&query=7-2-9+Ueno%2C+Taito+City%2C+Tokyo%2C+JP"
+            ),
+            map_source="booking_header_address",
+        )
+
+
+def test_map_enrichment_run_endpoint_returns_partial_for_search_only_results() -> None:
+    repository = InMemoryMapEnrichmentRepository()
+    service = PartialOnlyMapEnrichmentService()
+    client = TestClient(
+        create_app(
+            settings=Settings(),
+            collector=DummyCollector(),
+            map_enrichment_repository=repository,
+            map_enrichment_service=service,
+        )
+    )
+
+    response = client.post("/jobs/map-enrichment/run", json={"limit": 5})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "processed": 1,
+        "resolved": 0,
+        "partial": 1,
+        "failed": 0,
+        "limit_used": 5,
+    }
+    assert repository.documents["doc-pending"].map_status == "partial"
+    assert repository.documents["doc-pending"].google_maps_url is None
+    assert repository.documents["doc-pending"].google_maps_search_url is not None
