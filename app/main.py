@@ -15,7 +15,18 @@ from app.map_enrichment import (
     MapEnrichmentRepository,
     MongoMapEnrichmentRepository,
 )
-from app.routers import health_router, line_webhook_router, map_enrichment_router
+from app.notion_sync import (
+    HttpNotionClient,
+    MongoNotionSyncRepository,
+    NotionLodgingSyncService,
+    NotionSyncRepository,
+)
+from app.routers import (
+    health_router,
+    line_webhook_router,
+    map_enrichment_router,
+    notion_sync_router,
+)
 
 
 def create_app(
@@ -25,6 +36,8 @@ def create_app(
     lodging_link_service: LodgingLinkService | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
+    notion_sync_repository: NotionSyncRepository | None = None,
+    notion_sync_service: NotionLodgingSyncService | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.from_env()
     owned_resource = None
@@ -56,6 +69,29 @@ def create_app(
         )
     else:
         active_map_enrichment_repository = None
+    if notion_sync_repository is not None:
+        active_notion_sync_repository = notion_sync_repository
+    elif hasattr(active_collector, "collection"):
+        active_notion_sync_repository = MongoNotionSyncRepository(
+            active_collector.collection
+        )
+    else:
+        active_notion_sync_repository = None
+    active_notion_sync_service = notion_sync_service or (
+        NotionLodgingSyncService(
+            HttpNotionClient(
+                active_settings.notion_api_token,
+                timeout=active_settings.notion_request_timeout,
+                api_version=active_settings.notion_api_version,
+            ),
+            parent_page_id=active_settings.notion_parent_page_id,
+            database_id=active_settings.notion_database_id,
+            data_source_id=active_settings.notion_data_source_id,
+            database_title=active_settings.notion_database_title,
+        )
+        if active_settings.notion_api_token
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -77,10 +113,13 @@ def create_app(
     app.state.lodging_link_service = active_lodging_link_service
     app.state.map_enrichment_repository = active_map_enrichment_repository
     app.state.map_enrichment_service = active_map_enrichment_service
+    app.state.notion_sync_repository = active_notion_sync_repository
+    app.state.notion_sync_service = active_notion_sync_service
 
     app.include_router(health_router)
     app.include_router(line_webhook_router)
     app.include_router(map_enrichment_router)
+    app.include_router(notion_sync_router)
 
     return app
 
