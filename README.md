@@ -78,6 +78,19 @@ Copy-Item .env.example .env
 - `MONGO_DATABASE=nihon_line_bot`
 - `MONGO_COLLECTION=captured_lodging_links`
 
+如果你要把住宿資料同步到 Notion，另外要準備：
+
+- `NOTION_API_TOKEN`
+- `NOTION_PARENT_PAGE_ID`，用來建立第一個資料庫
+- `NOTION_DATA_SOURCE_ID`，若已建立好資料庫可直接填；否則可先呼叫 setup API 取得
+
+Notion 相關預設值：
+
+- `NOTION_DATABASE_TITLE=Nihon LINE Bot Lodgings`
+- `NOTION_API_VERSION=2026-03-11`
+- `NOTION_REQUEST_TIMEOUT=10.0`
+- `NOTION_SYNC_BATCH_SIZE=20`
+
 ## 啟動 MongoDB
 
 本機用 Docker 跑 MongoDB：
@@ -185,6 +198,22 @@ python -m app.map_enrichment_job
 - `MAP_ENRICHMENT_REQUEST_TIMEOUT=10.0`
 - `MAP_ENRICHMENT_MAX_RETRY_COUNT=3`
 
+## 執行 Notion sync job
+
+把 MongoDB 中的住宿資料同步到 Notion data source：
+
+```bash
+python -m app.notion_sync_job
+```
+
+這支 command 會同步 `notion_sync_status = pending`、曾經同步失敗、或在前次成功同步後又被 enrichment 更新過的文件。
+
+可調整的環境變數：
+
+- `NOTION_SYNC_BATCH_SIZE=20`
+- `NOTION_REQUEST_TIMEOUT=10.0`
+- `NOTION_API_VERSION=2026-03-11`
+
 ## Swagger 觸發住宿 enrichment
 
 如果你暫時不想設定 cron，可以直接開 Swagger 呼叫：
@@ -217,6 +246,60 @@ python -m app.map_enrichment_job
 `map_status = resolved` 代表已拿到精準座標；`map_status = partial` 代表目前只有住宿名稱或地址，尚未能精準定位。
 
 如果資料解析失敗，可以用 `GET /jobs/lodging-enrichment/documents?status=failed&limit=20` 檢查 `map_error`
+
+## Swagger 觸發 Notion sync
+
+若你要先在 Notion 建立資料庫，可呼叫：
+
+- `POST /jobs/notion-sync/setup`
+
+request body 可選填：
+
+```json
+{
+  "title": "Trip Lodgings"
+}
+```
+
+setup 成功後，response 會回傳 `database_id` 與 `data_source_id`。建議把它們填回 `.env` 的 `NOTION_DATABASE_ID` / `NOTION_DATA_SOURCE_ID`，之後重啟服務即可持續使用同一個資料庫。
+
+同步與檢查 API：
+
+- `POST /jobs/notion-sync/run`
+- `GET /jobs/notion-sync/documents`
+- `POST /jobs/notion-sync/documents/{document_id}/retry`
+
+`POST /jobs/notion-sync/run` 可選擇在 body 傳：
+
+```json
+{
+  "limit": 20,
+  "force": false
+}
+```
+
+- `force = false` 只會同步 pending / failed / 已變更文件
+- `force = true` 會忽略同步狀態，直接重跑所有文件
+
+Notion data source 預設會建立這些欄位：
+
+- `Name`
+- `Document ID`
+- `Platform`
+- `City`
+- `Country Code`
+- `Address`
+- `Property Type`
+- `Map Status`
+- `Details Status`
+- `Pricing Status`
+- `Price`
+- `Currency`
+- `Availability`
+- `Amenities`
+- `Lodging URL`
+- `Google Maps`
+- `Captured At`
 
 ## 用 Docker Compose 跑整套服務
 
