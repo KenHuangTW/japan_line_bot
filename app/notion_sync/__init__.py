@@ -10,6 +10,7 @@ from app.notion_sync.models import (
     NotionPageResult,
     NotionSyncCandidate,
     NotionSyncDocument,
+    NotionSyncSourceScope,
 )
 from app.notion_sync.service import (
     DEFAULT_NOTION_DATABASE_TITLE,
@@ -32,6 +33,7 @@ __all__ = [
     "NotionPageResult",
     "NotionSyncCandidate",
     "NotionSyncDocument",
+    "NotionSyncSourceScope",
     "DEFAULT_NOTION_DATABASE_TITLE",
     "NOTION_API_VERSION",
     "HttpNotionClient",

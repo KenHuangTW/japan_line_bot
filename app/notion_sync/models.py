@@ -20,6 +20,14 @@ class NotionPageResult:
 
 
 @dataclass(frozen=True)
+class NotionSyncSourceScope:
+    source_type: str
+    group_id: str | None = None
+    room_id: str | None = None
+    user_id: str | None = None
+
+
+@dataclass(frozen=True)
 class NotionSyncCandidate:
     document_id: Any
     platform: str
@@ -40,7 +48,14 @@ class NotionSyncCandidate:
     details_status: str | None = None
     pricing_status: str | None = None
     captured_at: datetime | None = None
+    last_updated_at: datetime | None = None
+    source_type: str | None = None
+    group_id: str | None = None
+    room_id: str | None = None
+    user_id: str | None = None
     notion_page_id: str | None = None
+    notion_database_id: str | None = None
+    notion_data_source_id: str | None = None
 
     @property
     def target_url(self) -> str:
@@ -83,6 +98,13 @@ class NotionSyncDocument:
     notion_last_attempt_at: datetime | None = None
     notion_last_synced_at: datetime | None = None
     captured_at: datetime | None = None
+    last_updated_at: datetime | None = None
+    source_type: str | None = None
+    group_id: str | None = None
+    room_id: str | None = None
+    user_id: str | None = None
+    notion_database_id: str | None = None
+    notion_data_source_id: str | None = None
 
 
 @dataclass(frozen=True)

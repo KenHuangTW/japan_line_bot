@@ -36,6 +36,9 @@ async def trigger_notion_sync_run(
     limit: int,
     force: bool = False,
 ) -> NotionSyncRunResponse:
+    if force and service.data_source_id:
+        await service.setup_database()
+
     summary = await run_notion_sync_job(
         repository=repository,
         service=service,
@@ -79,6 +82,8 @@ async def retry_notion_sync_document(
         candidate.document_id,
         page_id=result.page_id,
         page_url=result.page_url,
+        database_id=service.database_id or None,
+        data_source_id=service.data_source_id or None,
     )
     return NotionSyncRetryResponse(
         document_id=document_id,

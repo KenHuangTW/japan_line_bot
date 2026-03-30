@@ -283,23 +283,16 @@ setup 成功後，response 會回傳 `database_id` 與 `data_source_id`。建議
 
 Notion data source 預設會建立這些欄位：
 
-- `Name`
-- `Document ID`
-- `Platform`
-- `City`
-- `Country Code`
-- `Address`
-- `Property Type`
-- `Map Status`
-- `Details Status`
-- `Pricing Status`
-- `Price`
-- `Currency`
-- `Availability`
-- `Amenities`
-- `Lodging URL`
-- `Google Maps`
-- `Captured At`
+- `名稱`
+- `平台`
+- `房源URL`
+- `Google 地圖 URL`
+- `設施`
+- `最後更新時間`
+- `ID`
+
+`最後更新時間` 會取住宿資料最後一次被系統更新的時間，優先反映地圖 / 細節 / 價格 enrichment，否則退回首次擷取時間。
+如果你已經有舊版欄位的 data source，重新呼叫 `POST /jobs/notion-sync/setup` 也會把現有 schema 收斂成這 7 個欄位。
 
 ## 用 Docker Compose 跑整套服務
 
@@ -328,6 +321,12 @@ https://<your-domain>/webhooks/line
 5. 把 bot 邀進你們的 LINE 群組
 
 本機開發如果沒有公開網址，可以先用 tunnel 工具，例如 Cloudflare Tunnel 或 ngrok。
+
+## LINE 指令
+
+- `/ping`：回覆 `pong`
+- `/整理`：執行 Notion sync，只整理發出指令的那個聊天室中，pending / 尚未同步完成的資料
+- `/全部重來`：忽略既有同步狀態，只把發出指令的那個聊天室中的資料強制重新同步到 Notion
 
 ## 目前資料格式
 

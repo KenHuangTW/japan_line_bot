@@ -48,6 +48,8 @@ class InMemoryNotionSyncRepository:
                 price_currency="JPY",
                 notion_page_id="page-existing",
                 notion_page_url="https://www.notion.so/page-existing",
+                notion_database_id="db-existing",
+                notion_data_source_id="ds-existing",
                 notion_sync_status="synced",
                 notion_last_synced_at=datetime(2026, 3, 26, tzinfo=timezone.utc),
                 captured_at=datetime(2026, 3, 24, tzinfo=timezone.utc),
@@ -64,7 +66,7 @@ class InMemoryNotionSyncRepository:
             ),
         }
 
-    def find_pending(self, limit: int):
+    def find_pending(self, limit: int | None, source_scope=None):
         items = [
             self._to_candidate(item)
             for item in self.documents.values()
@@ -74,9 +76,11 @@ class InMemoryNotionSyncRepository:
             key=lambda item: item.captured_at
             or datetime.min.replace(tzinfo=timezone.utc)
         )
+        if limit is None:
+            return items
         return items[:limit]
 
-    def find_all(self, limit: int | None = None):
+    def find_all(self, limit: int | None = None, source_scope=None):
         items = [self._to_candidate(item) for item in self.documents.values()]
         items.sort(
             key=lambda item: item.captured_at
@@ -109,6 +113,8 @@ class InMemoryNotionSyncRepository:
         *,
         page_id: str,
         page_url: str | None,
+        database_id: str | None,
+        data_source_id: str | None,
     ) -> None:
         current = self.documents[document_id]
         self.documents[document_id] = NotionSyncDocument(
@@ -132,6 +138,8 @@ class InMemoryNotionSyncRepository:
             pricing_status=current.pricing_status,
             notion_page_id=page_id,
             notion_page_url=page_url,
+            notion_database_id=database_id,
+            notion_data_source_id=data_source_id,
             notion_sync_status="synced",
             notion_sync_error=None,
             notion_sync_retry_count=0,
@@ -163,6 +171,8 @@ class InMemoryNotionSyncRepository:
             pricing_status=current.pricing_status,
             notion_page_id=current.notion_page_id,
             notion_page_url=current.notion_page_url,
+            notion_database_id=current.notion_database_id,
+            notion_data_source_id=current.notion_data_source_id,
             notion_sync_status="failed",
             notion_sync_error=error,
             notion_sync_retry_count=current.notion_sync_retry_count + 1,
@@ -193,6 +203,8 @@ class InMemoryNotionSyncRepository:
             pricing_status=item.pricing_status,
             captured_at=item.captured_at,
             notion_page_id=item.notion_page_id,
+            notion_database_id=item.notion_database_id,
+            notion_data_source_id=item.notion_data_source_id,
         )
 
 
@@ -229,7 +241,10 @@ class FakeNotionSyncService:
         self.calls.append(document_id)
         if document_id in self.failing_document_ids:
             raise RuntimeError("simulated sync failure")
-        if candidate.notion_page_id:
+        if (
+            candidate.notion_page_id
+            and candidate.notion_data_source_id == self.data_source_id
+        ):
             return NotionPageResult(
                 page_id=candidate.notion_page_id,
                 page_url=f"https://www.notion.so/{candidate.notion_page_id}",
@@ -324,6 +339,7 @@ def test_notion_sync_run_endpoint_processes_pending_documents() -> None:
     assert body["data"]["failed"] == 0
     assert repository.documents["doc-pending"].notion_sync_status == "synced"
     assert repository.documents["doc-failed"].notion_sync_status == "synced"
+    assert repository.documents["doc-pending"].notion_data_source_id == "ds-456"
 
 
 def test_notion_sync_retry_endpoint_marks_failure() -> None:
