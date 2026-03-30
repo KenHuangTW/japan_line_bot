@@ -412,6 +412,52 @@ def test_line_webhook_replies_pong_for_ping_command() -> None:
     assert repository.items == []
     assert fake_line_client.calls == [("reply-token", "pong")]
 
+def test_line_webhook_replies_help_for_help_command() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+        )
+    )
+
+    payload = _build_payload("/help")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert repository.items == []
+    assert fake_line_client.calls == [
+        (
+            "reply-token",
+            (
+                "目前支援的指令：\n"
+                "/help：顯示目前支援的指令與說明\n"
+                "/ping：回覆 pong\n"
+                "/清單：直接回傳目前 Notion 住宿清單的連結\n"
+                "/整理：執行 Notion sync，只整理發出指令的那個聊天室中 pending / 尚未同步完成的資料\n"
+                "/全部重來：忽略既有同步狀態，只把發出指令的那個聊天室中的資料強制重新同步到 Notion"
+            ),
+        )
+    ]
+
 
 def test_line_webhook_replies_notion_link_for_list_command() -> None:
     settings = Settings(
