@@ -26,6 +26,8 @@ async def setup_notion_database(
         database_id=target.database_id,
         data_source_id=target.data_source_id,
         database_title=target.title,
+        database_url=target.url,
+        database_public_url=target.public_url,
     )
 
 

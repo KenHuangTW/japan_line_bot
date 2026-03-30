@@ -74,6 +74,8 @@ class Settings(BaseModel):
     notion_database_id: str = ""
     notion_data_source_id: str = ""
     notion_database_title: str = DEFAULT_NOTION_DATABASE_TITLE
+    notion_database_url: str = ""
+    notion_public_database_url: str = ""
     notion_api_version: str = NOTION_API_VERSION
     notion_request_timeout: float = 10.0
     notion_sync_batch_size: int = 20
@@ -134,6 +136,10 @@ class Settings(BaseModel):
             notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
             notion_database_title=os.getenv(
                 "NOTION_DATABASE_TITLE", DEFAULT_NOTION_DATABASE_TITLE
+            ),
+            notion_database_url=os.getenv("NOTION_DATABASE_URL", ""),
+            notion_public_database_url=os.getenv(
+                "NOTION_PUBLIC_DATABASE_URL", ""
             ),
             notion_api_version=os.getenv("NOTION_API_VERSION", NOTION_API_VERSION),
             notion_request_timeout=float(

@@ -22,6 +22,7 @@ from app.schemas.line_webhook import LineEventSource, LineWebhookRequest
 logger = logging.getLogger(__name__)
 
 PING_COMMAND = "/ping"
+NOTION_LIST_COMMAND = "/清單"
 NOTION_SYNC_PENDING_COMMAND = "/整理"
 NOTION_SYNC_FORCE_COMMAND = "/全部重來"
 
@@ -54,6 +55,18 @@ async def _handle_line_command(
             line_client=line_client,
             reply_token=reply_token,
             text="pong",
+        )
+        return True
+
+    if command == NOTION_LIST_COMMAND:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=await _run_notion_list_command(
+                settings=settings,
+                service=notion_sync_service,
+            ),
         )
         return True
 
@@ -128,6 +141,35 @@ async def _run_notion_sync_command(
         return f"Notion {action}失敗，請稍後再試。"
 
     return _format_notion_sync_summary(summary=summary, force=force)
+
+
+async def _run_notion_list_command(
+    *,
+    settings: Settings,
+    service: NotionLodgingSyncService | None,
+) -> str:
+    notion_url = settings.notion_public_database_url.strip()
+    if notion_url:
+        return notion_url
+
+    if service is not None:
+        try:
+            notion_url = await service.get_database_url(prefer_public=True)
+        except Exception:
+            logger.exception("Failed to resolve Notion database URL from LINE.")
+            notion_url = service.public_database_url or service.database_url or None
+
+        if service.public_database_url:
+            settings.notion_public_database_url = service.public_database_url
+        if service.database_url:
+            settings.notion_database_url = service.database_url
+
+    if not notion_url:
+        notion_url = settings.notion_database_url.strip()
+
+    if not notion_url:
+        return "Notion 清單連結尚未設定完成。"
+    return notion_url
 
 
 def _format_notion_sync_summary(

@@ -88,6 +88,8 @@ def create_app(
             database_id=active_settings.notion_database_id,
             data_source_id=active_settings.notion_data_source_id,
             database_title=active_settings.notion_database_title,
+            database_url=active_settings.notion_database_url,
+            public_database_url=active_settings.notion_public_database_url,
         )
         if active_settings.notion_api_token
         else None

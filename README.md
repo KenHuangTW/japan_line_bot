@@ -325,6 +325,7 @@ https://<your-domain>/webhooks/line
 ## LINE 指令
 
 - `/ping`：回覆 `pong`
+- `/清單`：直接回傳目前 Notion 住宿清單的連結
 - `/整理`：執行 Notion sync，只整理發出指令的那個聊天室中，pending / 尚未同步完成的資料
 - `/全部重來`：忽略既有同步狀態，只把發出指令的那個聊天室中的資料強制重新同步到 Notion
 

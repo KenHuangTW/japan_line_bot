@@ -89,6 +89,8 @@ async def create_notion_database(
     )
     settings.notion_database_id = response.database_id
     settings.notion_data_source_id = response.data_source_id
+    settings.notion_database_url = response.database_url or ""
+    settings.notion_public_database_url = response.database_public_url or ""
     return BaseResponse(
         is_success=True,
         message="Notion database is ready for lodging sync.",

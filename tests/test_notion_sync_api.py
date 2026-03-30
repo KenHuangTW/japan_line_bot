@@ -214,6 +214,8 @@ class FakeNotionSyncService:
         self.database_id = ""
         self.data_source_id = ""
         self.database_title = "Nihon LINE Bot Lodgings"
+        self.database_url = ""
+        self.public_database_url = ""
         self.calls: list[str] = []
         self.failing_document_ids: set[str] = set()
 
@@ -228,12 +230,16 @@ class FakeNotionSyncService:
     async def setup_database(self, title: str | None = None) -> NotionDatabaseTarget:
         self.database_id = "db-123"
         self.data_source_id = "ds-456"
+        self.database_url = "https://www.notion.so/workspace/db-123?v=view-456"
+        self.public_database_url = "https://www.notion.so/public-db-123"
         if title:
             self.database_title = title
         return NotionDatabaseTarget(
             database_id=self.database_id,
             data_source_id=self.data_source_id,
             title=self.database_title,
+            url=self.database_url,
+            public_url=self.public_database_url,
         )
 
     async def sync_document(self, candidate: NotionSyncCandidate) -> NotionPageResult:
@@ -281,8 +287,12 @@ def test_notion_setup_endpoint_creates_database_and_updates_settings() -> None:
     assert body["data"]["database_id"] == "db-123"
     assert body["data"]["data_source_id"] == "ds-456"
     assert body["data"]["database_title"] == "Trip Lodgings"
+    assert body["data"]["database_url"] == "https://www.notion.so/workspace/db-123?v=view-456"
+    assert body["data"]["database_public_url"] == "https://www.notion.so/public-db-123"
     assert settings.notion_database_id == "db-123"
     assert settings.notion_data_source_id == "ds-456"
+    assert settings.notion_database_url == "https://www.notion.so/workspace/db-123?v=view-456"
+    assert settings.notion_public_database_url == "https://www.notion.so/public-db-123"
 
 
 def test_notion_sync_documents_endpoint_lists_repository_state() -> None:
