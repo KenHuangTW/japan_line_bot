@@ -62,9 +62,9 @@ class Settings(BaseModel):
     line_channel_access_token: str = ""
     line_reply_on_capture: bool = True
     line_welcome_message: str = (
-        "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會先幫你收下來。"
+        "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會自動整理並同步到 Notion。"
     )
-    reply_capture_template: str = "已收到 {count} 筆住宿連結，先幫你記下來了。"
+    reply_capture_template: str = "已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。"
     reply_duplicate_link_template: str = "你是不是在找這個\n{url}"
     supported_domains: tuple[str, ...] = Field(default=("booking.com", "agoda.com"))
     map_enrichment_batch_size: int = 20
@@ -113,11 +113,11 @@ class Settings(BaseModel):
             line_reply_on_capture=_env_bool("LINE_REPLY_ON_CAPTURE", True),
             line_welcome_message=os.getenv(
                 "LINE_WELCOME_MESSAGE",
-                "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會先幫你收下來。",
+                "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會自動整理並同步到 Notion。",
             ),
             reply_capture_template=os.getenv(
                 "REPLY_CAPTURE_TEMPLATE",
-                "已收到 {count} 筆住宿連結，先幫你記下來了。",
+                "已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。",
             ),
             reply_duplicate_link_template=os.getenv(
                 "REPLY_DUPLICATE_LINK_TEMPLATE",
