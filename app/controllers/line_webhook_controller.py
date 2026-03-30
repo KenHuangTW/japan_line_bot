@@ -9,7 +9,8 @@ from app.controllers.repositories.captured_link_repository import (
 )
 from app.link_extractor import extract_lodging_links
 from app.lodging_links import LodgingLinkService
-from app.models import CapturedLodgingLink
+from app.lodging_links.common import build_lodging_lookup_keys
+from app.models import CapturedLodgingLink, LodgingLinkMatch
 from app.notion_sync import (
     NotionLodgingSyncService,
     NotionSyncRepository,
@@ -97,6 +98,37 @@ async def _reply_if_possible(
 ) -> None:
     if reply_token and settings.line_channel_access_token:
         await _safe_reply(line_client, reply_token, text)
+
+
+def _build_duplicate_lookup_urls(match: LodgingLinkMatch) -> list[str]:
+    lookup_urls: list[str] = []
+    for candidate_url in (match.url, match.resolved_url):
+        if candidate_url and candidate_url not in lookup_urls:
+            lookup_urls.append(candidate_url)
+    for candidate_url in build_lodging_lookup_keys(match.url, match.resolved_url):
+        if candidate_url not in lookup_urls:
+            lookup_urls.append(candidate_url)
+    return lookup_urls
+
+
+def _uses_short_link(
+    *,
+    url: str,
+    resolved_url: str | None,
+) -> bool:
+    return bool(resolved_url and resolved_url != url)
+
+
+def _select_duplicate_reply_url(
+    *,
+    match: LodgingLinkMatch,
+    duplicate: CapturedLodgingLink,
+) -> str:
+    if _uses_short_link(url=duplicate.url, resolved_url=duplicate.resolved_url):
+        return duplicate.url
+    if _uses_short_link(url=match.url, resolved_url=match.resolved_url):
+        return match.url
+    return duplicate.resolved_url or duplicate.url
 
 
 async def _run_notion_sync_command(
@@ -214,39 +246,77 @@ async def process_events(
         if not link_matches:
             continue
 
-        records = [
-            CapturedLodgingLink(
-                platform=link.platform,
-                url=link.url,
-                hostname=link.hostname,
-                resolved_url=link.resolved_url,
-                resolved_hostname=link.resolved_hostname,
-                message_text=text,
+        records: list[CapturedLodgingLink] = []
+        duplicate_reply_urls: list[str] = []
+        seen_duplicate_reply_urls: set[str] = set()
+        pending_lookup_urls: set[str] = set()
+
+        for link in link_matches:
+            lookup_urls = _build_duplicate_lookup_urls(link)
+            if any(url in pending_lookup_urls for url in lookup_urls):
+                reply_url = link.url if _uses_short_link(
+                    url=link.url,
+                    resolved_url=link.resolved_url,
+                ) else link.resolved_url or link.url
+                if reply_url not in seen_duplicate_reply_urls:
+                    duplicate_reply_urls.append(reply_url)
+                    seen_duplicate_reply_urls.add(reply_url)
+                continue
+
+            duplicate = repository.find_duplicate(
+                lookup_urls,
                 source_type=event.source.type,
-                destination=payload.destination,
                 group_id=event.source.groupId,
                 room_id=event.source.roomId,
                 user_id=event.source.userId,
-                message_id=event.message.id,
-                event_timestamp_ms=event.timestamp,
-                event_mode=event.mode,
             )
-            for link in link_matches
-        ]
+            if duplicate is not None:
+                reply_url = _select_duplicate_reply_url(
+                    match=link,
+                    duplicate=duplicate,
+                )
+                if reply_url not in seen_duplicate_reply_urls:
+                    duplicate_reply_urls.append(reply_url)
+                    seen_duplicate_reply_urls.add(reply_url)
+                continue
 
-        repository.append_many(records)
-        captured_count = len(records)
+            records.append(
+                CapturedLodgingLink(
+                    platform=link.platform,
+                    url=link.url,
+                    hostname=link.hostname,
+                    resolved_url=link.resolved_url,
+                    resolved_hostname=link.resolved_hostname,
+                    message_text=text,
+                    source_type=event.source.type,
+                    destination=payload.destination,
+                    group_id=event.source.groupId,
+                    room_id=event.source.roomId,
+                    user_id=event.source.userId,
+                    message_id=event.message.id,
+                    event_timestamp_ms=event.timestamp,
+                    event_mode=event.mode,
+                )
+            )
+            pending_lookup_urls.update(lookup_urls)
+
+        captured_count = repository.append_many(records) if records else 0
         captured_total += captured_count
 
-        if (
-            settings.line_reply_on_capture
-            and reply_token
-            and settings.line_channel_access_token
-        ):
+        reply_messages = [
+            settings.reply_duplicate_link_template.format(url=url)
+            for url in duplicate_reply_urls
+        ]
+        if settings.line_reply_on_capture and captured_count > 0:
+            reply_messages.append(
+                settings.reply_capture_template.format(count=captured_count)
+            )
+
+        if reply_messages and reply_token and settings.line_channel_access_token:
             await _safe_reply(
                 line_client,
                 reply_token,
-                settings.reply_capture_template.format(count=captured_count),
+                "\n\n".join(reply_messages),
             )
 
     return captured_total

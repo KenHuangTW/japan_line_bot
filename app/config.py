@@ -65,6 +65,7 @@ class Settings(BaseModel):
         "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會先幫你收下來。"
     )
     reply_capture_template: str = "已收到 {count} 筆住宿連結，先幫你記下來了。"
+    reply_duplicate_link_template: str = "你是不是在找這個\n{url}"
     supported_domains: tuple[str, ...] = Field(default=("booking.com", "agoda.com"))
     map_enrichment_batch_size: int = 20
     map_enrichment_request_timeout: float = 10.0
@@ -115,6 +116,10 @@ class Settings(BaseModel):
             reply_capture_template=os.getenv(
                 "REPLY_CAPTURE_TEMPLATE",
                 "已收到 {count} 筆住宿連結，先幫你記下來了。",
+            ),
+            reply_duplicate_link_template=os.getenv(
+                "REPLY_DUPLICATE_LINK_TEMPLATE",
+                "你是不是在找這個\n{url}",
             ),
             supported_domains=_env_csv(
                 "SUPPORTED_DOMAINS", ("booking.com", "agoda.com")

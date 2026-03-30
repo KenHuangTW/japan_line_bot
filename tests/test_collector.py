@@ -29,6 +29,26 @@ class FakeCollection:
         self.ordered = ordered
         return FakeInsertManyResult(len(documents))
 
+    def find_one(self, filter: dict[str, object], *args, **kwargs) -> dict[str, object] | None:
+        matched = [
+            document
+            for document in self.documents
+            if _matches_fake_query(document, filter)
+        ]
+        sort = kwargs.get("sort")
+        if sort:
+            for field, direction in reversed(sort):
+                matched.sort(
+                    key=lambda item: item.get(field),
+                    reverse=direction < 0,
+                )
+        return matched[0] if matched else None
+
+    def find(self, query: dict[str, object]) -> list[dict[str, object]]:
+        return [
+            document for document in self.documents if _matches_fake_query(document, query)
+        ]
+
 
 class FakeDatabase:
     def __init__(self, collection: FakeCollection) -> None:
@@ -72,6 +92,54 @@ def _sample_link(url: str) -> CapturedLodgingLink:
     )
 
 
+def _matches_fake_query(document: dict[str, object], query: dict[str, object]) -> bool:
+    for key, value in query.items():
+        if key == "$and":
+            assert isinstance(value, list)
+            if not all(_matches_fake_query(document, clause) for clause in value):
+                return False
+            continue
+        if key == "$or":
+            assert isinstance(value, list)
+            if not any(_matches_fake_query(document, clause) for clause in value):
+                return False
+            continue
+        if key == "$expr":
+            assert isinstance(value, dict)
+            if not _matches_fake_expr(document, value):
+                return False
+            continue
+        if isinstance(value, dict):
+            if "$in" in value and document.get(key) not in value["$in"]:
+                return False
+            if "$ne" in value and document.get(key) == value["$ne"]:
+                return False
+            if "$regex" in value:
+                pattern = value["$regex"]
+                field_value = document.get(key)
+                if (
+                    not isinstance(field_value, str)
+                    or pattern.search(field_value) is None
+                ):
+                    return False
+            continue
+        if document.get(key) != value:
+            return False
+    return True
+
+
+def _matches_fake_expr(document: dict[str, object], expr: dict[str, object]) -> bool:
+    operands = expr.get("$ne")
+    if not isinstance(operands, list) or len(operands) != 2:
+        raise AssertionError("Unsupported fake Mongo expression.")
+    left, right = operands
+    if isinstance(left, str) and left.startswith("$"):
+        left = document.get(left[1:])
+    if isinstance(right, str) and right.startswith("$"):
+        right = document.get(right[1:])
+    return left != right
+
+
 def test_mongo_captured_link_repository_appends_many_records() -> None:
     collection = FakeCollection()
     repository = MongoCapturedLinkRepository(collection)
@@ -90,6 +158,59 @@ def test_mongo_captured_link_repository_appends_many_records() -> None:
         "https://www.booking.com/hotel/jp/bar.html",
     ]
     assert isinstance(collection.documents[0]["captured_at"], datetime)
+
+
+def test_mongo_captured_link_repository_prefers_saved_short_link_for_duplicates() -> None:
+    collection = FakeCollection()
+    repository = MongoCapturedLinkRepository(collection)
+    collection.documents.extend(
+        [
+            _sample_link("https://www.booking.com/Share-older").model_dump(mode="python")
+            | {
+                "resolved_url": "https://www.booking.com/hotel/jp/foo.html",
+                "captured_at": datetime(2026, 3, 29),
+            },
+            _sample_link("https://www.booking.com/hotel/jp/foo.html").model_dump(mode="python")
+            | {
+                "resolved_url": "https://www.booking.com/hotel/jp/foo.html",
+                "captured_at": datetime(2026, 3, 30),
+            },
+        ]
+    )
+
+    duplicate = repository.find_duplicate(
+        ["https://www.booking.com/hotel/jp/foo.html"],
+        source_type="group",
+        group_id="Cgroup123",
+    )
+
+    assert duplicate is not None
+    assert duplicate.url == "https://www.booking.com/Share-older"
+
+
+def test_mongo_captured_link_repository_matches_duplicates_ignoring_query_string() -> None:
+    collection = FakeCollection()
+    repository = MongoCapturedLinkRepository(collection)
+    collection.documents.append(
+        _sample_link("https://www.agoda.com/sp/B70FF37xamn").model_dump(mode="python")
+        | {
+            "platform": "agoda",
+            "hostname": "agoda.com",
+            "resolved_url": (
+                "https://www.agoda.com/funhome-h40642218/hotel/nagoya-jp.html"
+                "?pid=redirect"
+            ),
+        }
+    )
+
+    duplicate = repository.find_duplicate(
+        ["https://www.agoda.com/funhome-h40642218/hotel/nagoya-jp.html"],
+        source_type="group",
+        group_id="Cgroup123",
+    )
+
+    assert duplicate is not None
+    assert duplicate.url == "https://www.agoda.com/sp/B70FF37xamn"
 
 
 def test_create_collector_uses_mongo_backend() -> None:

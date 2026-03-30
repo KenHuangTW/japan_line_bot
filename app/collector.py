@@ -34,6 +34,12 @@ class MissingMongoDependencyCollector:
             "Install project dependencies before capturing links."
         ) from self.error
 
+    def find_duplicate(self, urls, **kwargs):
+        raise RuntimeError(
+            "pymongo is required for MongoDB storage. "
+            "Install project dependencies before capturing links."
+        ) from self.error
+
 
 MongoClientFactory = Callable[..., MongoClientLike]
 
