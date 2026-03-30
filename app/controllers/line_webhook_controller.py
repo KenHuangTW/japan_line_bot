@@ -245,6 +245,42 @@ async def _run_lodging_enrichment_before_notion_sync(
     )
 
 
+async def _run_automatic_notion_sync_after_capture(
+    *,
+    source: LineEventSource,
+    notion_sync_repository: NotionSyncRepository | None,
+    notion_sync_service: NotionLodgingSyncService | None,
+    map_enrichment_repository: MapEnrichmentRepository | None,
+    map_enrichment_service: LodgingMapEnrichmentService | None,
+) -> None:
+    source_scope = _build_source_scope(source)
+    if source_scope is None:
+        return
+
+    if notion_sync_repository is None or notion_sync_service is None:
+        return
+
+    if not notion_sync_service.is_sync_configured:
+        return
+
+    try:
+        await _run_lodging_enrichment_before_notion_sync(
+            repository=map_enrichment_repository,
+            service=map_enrichment_service,
+            force=False,
+            source_scope=source_scope,
+        )
+        await run_notion_sync_job(
+            repository=notion_sync_repository,
+            service=notion_sync_service,
+            limit=None,
+            force=False,
+            source_scope=source_scope,
+        )
+    except Exception:
+        logger.exception("Failed to run automatic Notion sync after capture.")
+
+
 async def _run_notion_list_command(
     *,
     settings: Settings,
@@ -425,6 +461,15 @@ async def process_events(
 
         captured_count = repository.append_many(records) if records else 0
         captured_total += captured_count
+
+        if captured_count > 0:
+            await _run_automatic_notion_sync_after_capture(
+                source=event.source,
+                notion_sync_repository=notion_sync_repository,
+                notion_sync_service=notion_sync_service,
+                map_enrichment_repository=map_enrichment_repository,
+                map_enrichment_service=map_enrichment_service,
+            )
 
         reply_messages = [
             settings.reply_duplicate_link_template.format(url=url)
