@@ -257,6 +257,14 @@ class CapturedLodgingLink(BaseModel):
         default=None,
         description="同步到 Notion 後對應的 page URL。",
     )
+    notion_database_id: str | None = Field(
+        default=None,
+        description="同步到 Notion 後對應的 database id。",
+    )
+    notion_data_source_id: str | None = Field(
+        default=None,
+        description="同步到 Notion 後對應的 data source id。",
+    )
     notion_sync_status: SyncStatus = Field(
         default="pending",
         description="同步到 Notion 的狀態。",

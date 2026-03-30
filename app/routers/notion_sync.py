@@ -47,7 +47,8 @@ def _require_setup_service(request: Request) -> NotionLodgingSyncService:
             status_code=503,
             detail=(
                 "Notion setup is not configured. "
-                "Set NOTION_API_TOKEN and NOTION_PARENT_PAGE_ID."
+                "Set NOTION_API_TOKEN plus NOTION_PARENT_PAGE_ID "
+                "or an existing NOTION_DATA_SOURCE_ID."
             ),
         )
 

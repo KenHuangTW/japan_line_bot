@@ -14,30 +14,63 @@ NOTION_API_BASE_URL = "https://api.notion.com/v1"
 NOTION_API_VERSION = "2026-03-11"
 DEFAULT_NOTION_DATABASE_TITLE = "Nihon LINE Bot Lodgings"
 
-TITLE_PROPERTY = "Name"
-DOCUMENT_ID_PROPERTY = "Document ID"
-PLATFORM_PROPERTY = "Platform"
-CITY_PROPERTY = "City"
-COUNTRY_CODE_PROPERTY = "Country Code"
-ADDRESS_PROPERTY = "Address"
-PROPERTY_TYPE_PROPERTY = "Property Type"
-MAP_STATUS_PROPERTY = "Map Status"
-DETAILS_STATUS_PROPERTY = "Details Status"
-PRICING_STATUS_PROPERTY = "Pricing Status"
-PRICE_PROPERTY = "Price"
-PRICE_CURRENCY_PROPERTY = "Currency"
-AVAILABILITY_PROPERTY = "Availability"
-AMENITIES_PROPERTY = "Amenities"
-LODGING_URL_PROPERTY = "Lodging URL"
-GOOGLE_MAPS_PROPERTY = "Google Maps"
-CAPTURED_AT_PROPERTY = "Captured At"
+TITLE_PROPERTY = "名稱"
+PLATFORM_PROPERTY = "平台"
+LODGING_URL_PROPERTY = "房源URL"
+GOOGLE_MAPS_PROPERTY = "Google 地圖 URL"
+AMENITIES_PROPERTY = "設施"
+LAST_UPDATED_PROPERTY = "最後更新時間"
+DOCUMENT_ID_PROPERTY = "ID"
 
-SYNC_STATUS_OPTIONS = (
-    {"name": "pending", "color": "yellow"},
-    {"name": "resolved", "color": "green"},
-    {"name": "partial", "color": "orange"},
-    {"name": "failed", "color": "red"},
+PLATFORM_OPTIONS = [
+    {"name": "booking", "color": "blue"},
+    {"name": "agoda", "color": "green"},
     {"name": "unknown", "color": "default"},
+]
+
+PROPERTY_SPECS = (
+    {
+        "key": "title",
+        "label": TITLE_PROPERTY,
+        "aliases": (TITLE_PROPERTY, "Name"),
+        "definition": {"title": {}},
+    },
+    {
+        "key": "platform",
+        "label": PLATFORM_PROPERTY,
+        "aliases": (PLATFORM_PROPERTY, "Platform"),
+        "definition": {"select": {"options": list(PLATFORM_OPTIONS)}},
+    },
+    {
+        "key": "lodging_url",
+        "label": LODGING_URL_PROPERTY,
+        "aliases": (LODGING_URL_PROPERTY, "Lodging URL"),
+        "definition": {"url": {}},
+    },
+    {
+        "key": "google_maps_url",
+        "label": GOOGLE_MAPS_PROPERTY,
+        "aliases": (GOOGLE_MAPS_PROPERTY, "Google Maps"),
+        "definition": {"url": {}},
+    },
+    {
+        "key": "amenities",
+        "label": AMENITIES_PROPERTY,
+        "aliases": (AMENITIES_PROPERTY, "Amenities"),
+        "definition": {"rich_text": {}},
+    },
+    {
+        "key": "last_updated_at",
+        "label": LAST_UPDATED_PROPERTY,
+        "aliases": (LAST_UPDATED_PROPERTY, "Captured At"),
+        "definition": {"date": {}},
+    },
+    {
+        "key": "document_id",
+        "label": DOCUMENT_ID_PROPERTY,
+        "aliases": (DOCUMENT_ID_PROPERTY, "Document ID"),
+        "definition": {"rich_text": {}},
+    },
 )
 
 
@@ -54,6 +87,26 @@ class NotionClient(Protocol):
         parent_page_id: str,
         title: str,
     ) -> NotionDatabaseTarget: ...
+
+    async def retrieve_data_source(
+        self,
+        *,
+        data_source_id: str,
+    ) -> dict[str, Any]: ...
+
+    async def update_data_source(
+        self,
+        *,
+        data_source_id: str,
+        title: str,
+        properties: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def retrieve_page(
+        self,
+        *,
+        page_id: str,
+    ) -> dict[str, Any]: ...
 
     async def create_page(
         self,
@@ -113,6 +166,36 @@ class HttpNotionClient:
             return target
 
         return await self._retrieve_database_target(database_id)
+
+    async def retrieve_data_source(
+        self,
+        *,
+        data_source_id: str,
+    ) -> dict[str, Any]:
+        return await self._request("GET", f"/data_sources/{data_source_id}")
+
+    async def update_data_source(
+        self,
+        *,
+        data_source_id: str,
+        title: str,
+        properties: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._request(
+            "PATCH",
+            f"/data_sources/{data_source_id}",
+            {
+                "title": [_text_block(title)],
+                "properties": properties,
+            },
+        )
+
+    async def retrieve_page(
+        self,
+        *,
+        page_id: str,
+    ) -> dict[str, Any]:
+        return await self._request("GET", f"/pages/{page_id}")
 
     async def create_page(
         self,
@@ -205,19 +288,43 @@ class NotionLodgingSyncService:
 
     @property
     def is_setup_configured(self) -> bool:
-        return bool(self.parent_page_id)
+        return bool(self.parent_page_id or self.data_source_id)
 
     @property
     def is_sync_configured(self) -> bool:
         return bool(self.data_source_id)
 
     async def setup_database(self, title: str | None = None) -> NotionDatabaseTarget:
+        target_title = (title or self.database_title).strip() or self.database_title
+        if self.data_source_id:
+            data_source = await self.client.retrieve_data_source(
+                data_source_id=self.data_source_id,
+            )
+            updated_data_source = await self.client.update_data_source(
+                data_source_id=self.data_source_id,
+                title=target_title,
+                properties=build_notion_data_source_update_properties(data_source),
+            )
+            self.configure_target(
+                database_id=_extract_parent_database_id(updated_data_source)
+                or self.database_id,
+                data_source_id=str(updated_data_source.get("id") or self.data_source_id),
+            )
+            self.database_title = (
+                _extract_plain_text(updated_data_source.get("title")) or target_title
+            )
+            return NotionDatabaseTarget(
+                database_id=self.database_id,
+                data_source_id=self.data_source_id,
+                title=self.database_title,
+            )
+
         if not self.parent_page_id:
             raise RuntimeError("NOTION_PARENT_PAGE_ID is required for Notion setup.")
 
         target = await self.client.create_database(
             parent_page_id=self.parent_page_id,
-            title=(title or self.database_title).strip() or self.database_title,
+            title=target_title,
         )
         self.configure_target(
             database_id=target.database_id,
@@ -232,14 +339,14 @@ class NotionLodgingSyncService:
             raise RuntimeError("NOTION_DATA_SOURCE_ID is required for Notion sync.")
 
         properties = build_notion_page_properties(candidate)
-        if candidate.notion_page_id:
+        if await self._should_update_existing_page(candidate):
             try:
                 return await self.client.update_page(
-                    page_id=candidate.notion_page_id,
+                    page_id=str(candidate.notion_page_id),
                     properties=properties,
                 )
             except NotionApiError as error:
-                if error.status_code != 404:
+                if error.status_code != 404 and not _is_archived_block_error(error):
                     raise
 
         return await self.client.create_page(
@@ -251,81 +358,136 @@ class NotionLodgingSyncService:
         self.database_id = database_id.strip()
         self.data_source_id = data_source_id.strip()
 
+    async def _should_update_existing_page(
+        self,
+        candidate: NotionSyncCandidate,
+    ) -> bool:
+        if not candidate.notion_page_id:
+            return False
+
+        if candidate.notion_data_source_id:
+            return candidate.notion_data_source_id == self.data_source_id
+
+        if candidate.notion_database_id and self.database_id:
+            return candidate.notion_database_id == self.database_id
+
+        try:
+            page = await self.client.retrieve_page(page_id=str(candidate.notion_page_id))
+        except NotionApiError as error:
+            if error.status_code == 404:
+                return False
+            raise
+
+        if _is_archived_page(page):
+            return False
+
+        page_data_source_id = _extract_parent_data_source_id(page)
+        if page_data_source_id:
+            return page_data_source_id == self.data_source_id
+
+        page_database_id = _extract_parent_database_id(page)
+        if page_database_id and self.database_id:
+            return page_database_id == self.database_id
+
+        return True
+
 
 def build_notion_data_source_properties() -> dict[str, Any]:
     return {
-        TITLE_PROPERTY: {"title": {}},
-        DOCUMENT_ID_PROPERTY: {"rich_text": {}},
-        PLATFORM_PROPERTY: {
-            "select": {
-                "options": [
-                    {"name": "booking", "color": "blue"},
-                    {"name": "agoda", "color": "green"},
-                    {"name": "unknown", "color": "default"},
-                ]
-            }
-        },
-        CITY_PROPERTY: {"rich_text": {}},
-        COUNTRY_CODE_PROPERTY: {"rich_text": {}},
-        ADDRESS_PROPERTY: {"rich_text": {}},
-        PROPERTY_TYPE_PROPERTY: {"rich_text": {}},
-        MAP_STATUS_PROPERTY: {"select": {"options": list(SYNC_STATUS_OPTIONS)}},
-        DETAILS_STATUS_PROPERTY: {"select": {"options": list(SYNC_STATUS_OPTIONS)}},
-        PRICING_STATUS_PROPERTY: {"select": {"options": list(SYNC_STATUS_OPTIONS)}},
-        PRICE_PROPERTY: {"number": {"format": "number_with_commas"}},
-        PRICE_CURRENCY_PROPERTY: {"rich_text": {}},
-        AVAILABILITY_PROPERTY: {
-            "select": {
-                "options": [
-                    {"name": "Available", "color": "green"},
-                    {"name": "Sold Out", "color": "red"},
-                    {"name": "Unknown", "color": "default"},
-                ]
-            }
-        },
-        AMENITIES_PROPERTY: {"rich_text": {}},
-        LODGING_URL_PROPERTY: {"url": {}},
-        GOOGLE_MAPS_PROPERTY: {"url": {}},
-        CAPTURED_AT_PROPERTY: {"date": {}},
+        str(spec["label"]): dict(spec["definition"])
+        for spec in PROPERTY_SPECS
     }
+
+
+def build_notion_data_source_update_properties(
+    data_source: dict[str, Any],
+) -> dict[str, Any]:
+    properties = data_source.get("properties")
+    if not isinstance(properties, dict):
+        return build_notion_data_source_properties()
+
+    updates: dict[str, Any] = {}
+    matched_keys: set[str] = set()
+    for property_name, config in properties.items():
+        if not isinstance(config, dict):
+            continue
+
+        spec = _match_property_spec(property_name)
+        property_id = str(config.get("id") or property_name)
+        if spec is None:
+            updates[property_id] = None
+            continue
+
+        matched_keys.add(str(spec["key"]))
+        updates[property_id] = {
+            "name": spec["label"],
+            **dict(spec["definition"]),
+        }
+
+    for spec in PROPERTY_SPECS:
+        if str(spec["key"]) in matched_keys:
+            continue
+        updates[str(spec["label"])] = dict(spec["definition"])
+
+    return updates
 
 
 def build_notion_page_properties(candidate: NotionSyncCandidate) -> dict[str, Any]:
+    last_updated_at = candidate.last_updated_at or candidate.captured_at
     return {
         TITLE_PROPERTY: {"title": [_text_block(_truncate(candidate.display_name, 2000))]},
-        DOCUMENT_ID_PROPERTY: {
-            "rich_text": [_text_block(_truncate(str(candidate.document_id), 2000))]
-        },
         PLATFORM_PROPERTY: {"select": {"name": _normalize_platform(candidate.platform)}},
-        CITY_PROPERTY: {"rich_text": _rich_text_value(candidate.city)},
-        COUNTRY_CODE_PROPERTY: {"rich_text": _rich_text_value(candidate.country_code)},
-        ADDRESS_PROPERTY: {"rich_text": _rich_text_value(candidate.formatted_address)},
-        PROPERTY_TYPE_PROPERTY: {"rich_text": _rich_text_value(candidate.property_type)},
-        MAP_STATUS_PROPERTY: {"select": {"name": _normalize_status(candidate.map_status)}},
-        DETAILS_STATUS_PROPERTY: {
-            "select": {"name": _normalize_status(candidate.details_status)}
-        },
-        PRICING_STATUS_PROPERTY: {
-            "select": {"name": _normalize_status(candidate.pricing_status)}
-        },
-        PRICE_PROPERTY: {"number": candidate.price_amount},
-        PRICE_CURRENCY_PROPERTY: {"rich_text": _rich_text_value(candidate.price_currency)},
-        AVAILABILITY_PROPERTY: {
-            "select": {"name": _availability_name(candidate.is_sold_out)}
-        },
-        AMENITIES_PROPERTY: {
-            "rich_text": _rich_text_value(", ".join(candidate.amenities))
-        },
         LODGING_URL_PROPERTY: {"url": _safe_url(candidate.target_url)},
         GOOGLE_MAPS_PROPERTY: {"url": _safe_url(candidate.maps_url)},
-        CAPTURED_AT_PROPERTY: {
+        AMENITIES_PROPERTY: {"rich_text": _rich_text_value(", ".join(candidate.amenities))},
+        LAST_UPDATED_PROPERTY: {
             "date": (
-                {"start": candidate.captured_at.isoformat()}
-                if candidate.captured_at is not None
+                {"start": last_updated_at.isoformat()}
+                if last_updated_at is not None
                 else None
             )
         },
+        DOCUMENT_ID_PROPERTY: {
+            "rich_text": [_text_block(_truncate(str(candidate.document_id), 2000))]
+        },
     }
+
+
+def _match_property_spec(property_name: str) -> dict[str, Any] | None:
+    normalized_name = property_name.strip()
+    for spec in PROPERTY_SPECS:
+        aliases = spec.get("aliases") or ()
+        if normalized_name in aliases:
+            return spec
+    return None
+
+
+def _extract_parent_database_id(payload: dict[str, Any]) -> str | None:
+    parent = payload.get("parent")
+    if not isinstance(parent, dict):
+        return None
+    database_id = parent.get("database_id")
+    if isinstance(database_id, str) and database_id.strip():
+        return database_id.strip()
+    return None
+
+
+def _extract_parent_data_source_id(payload: dict[str, Any]) -> str | None:
+    parent = payload.get("parent")
+    if not isinstance(parent, dict):
+        return None
+    data_source_id = parent.get("data_source_id")
+    if isinstance(data_source_id, str) and data_source_id.strip():
+        return data_source_id.strip()
+    return None
+
+
+def _is_archived_page(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("archived")) or bool(payload.get("in_trash"))
+
+
+def _is_archived_block_error(error: NotionApiError) -> bool:
+    return "archived" in str(error).lower()
 
 
 def _extract_database_target(payload: dict[str, Any]) -> NotionDatabaseTarget | None:
@@ -416,21 +578,6 @@ def _normalize_platform(platform: str | None) -> str:
     if text in {"booking", "agoda"}:
         return text
     return "unknown"
-
-
-def _normalize_status(status: str | None) -> str:
-    text = (status or "").strip().lower()
-    if text in {"pending", "resolved", "partial", "failed"}:
-        return text
-    return "unknown"
-
-
-def _availability_name(is_sold_out: bool | None) -> str:
-    if is_sold_out is True:
-        return "Sold Out"
-    if is_sold_out is False:
-        return "Available"
-    return "Unknown"
 
 
 def _safe_url(url: str | None) -> str | None:
