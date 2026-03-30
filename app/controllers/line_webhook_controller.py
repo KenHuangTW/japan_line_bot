@@ -22,10 +22,24 @@ from app.schemas.line_webhook import LineEventSource, LineWebhookRequest
 
 logger = logging.getLogger(__name__)
 
+HELP_COMMAND = "/help"
 PING_COMMAND = "/ping"
 NOTION_LIST_COMMAND = "/清單"
 NOTION_SYNC_PENDING_COMMAND = "/整理"
 NOTION_SYNC_FORCE_COMMAND = "/全部重來"
+LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
+    (HELP_COMMAND, "顯示目前支援的指令與說明"),
+    (PING_COMMAND, "回覆 pong"),
+    (NOTION_LIST_COMMAND, "直接回傳目前 Notion 住宿清單的連結"),
+    (
+        NOTION_SYNC_PENDING_COMMAND,
+        "執行 Notion sync，只整理發出指令的那個聊天室中 pending / 尚未同步完成的資料",
+    ),
+    (
+        NOTION_SYNC_FORCE_COMMAND,
+        "忽略既有同步狀態，只把發出指令的那個聊天室中的資料強制重新同步到 Notion",
+    ),
+)
 
 
 async def _safe_reply(
@@ -50,6 +64,15 @@ async def _handle_line_command(
     notion_sync_service: NotionLodgingSyncService | None,
 ) -> bool:
     command = text.strip()
+    if command == HELP_COMMAND:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=_format_help_message(),
+        )
+        return True
+
     if command == PING_COMMAND:
         await _reply_if_possible(
             settings=settings,
@@ -202,6 +225,13 @@ async def _run_notion_list_command(
     if not notion_url:
         return "Notion 清單連結尚未設定完成。"
     return notion_url
+
+def _format_help_message() -> str:
+    command_lines = [
+        f"{command}：{description}"
+        for command, description in LINE_COMMAND_DESCRIPTIONS
+    ]
+    return "目前支援的指令：\n" + "\n".join(command_lines)
 
 
 def _format_notion_sync_summary(
