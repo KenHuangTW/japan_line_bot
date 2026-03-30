@@ -10,6 +10,12 @@ from app.controllers.repositories.captured_link_repository import (
 from app.link_extractor import extract_lodging_links
 from app.lodging_links import LodgingLinkService
 from app.lodging_links.common import build_lodging_lookup_keys
+from app.map_enrichment import (
+    LodgingMapEnrichmentService,
+    MapEnrichmentRepository,
+    retry_all_map_enrichment_documents,
+    run_map_enrichment_job,
+)
 from app.models import CapturedLodgingLink, LodgingLinkMatch
 from app.notion_sync import (
     NotionLodgingSyncService,
@@ -62,6 +68,8 @@ async def _handle_line_command(
     line_client: LineClient,
     notion_sync_repository: NotionSyncRepository | None,
     notion_sync_service: NotionLodgingSyncService | None,
+    map_enrichment_repository: MapEnrichmentRepository | None,
+    map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> bool:
     command = text.strip()
     if command == HELP_COMMAND:
@@ -104,6 +112,8 @@ async def _handle_line_command(
                 service=notion_sync_service,
                 force=False,
                 source_scope=_build_source_scope(source),
+                map_enrichment_repository=map_enrichment_repository,
+                map_enrichment_service=map_enrichment_service,
             ),
         )
         return True
@@ -118,6 +128,8 @@ async def _handle_line_command(
                 service=notion_sync_service,
                 force=True,
                 source_scope=_build_source_scope(source),
+                map_enrichment_repository=map_enrichment_repository,
+                map_enrichment_service=map_enrichment_service,
             ),
         )
         return True
@@ -173,6 +185,8 @@ async def _run_notion_sync_command(
     service: NotionLodgingSyncService | None,
     force: bool,
     source_scope: NotionSyncSourceScope | None,
+    map_enrichment_repository: MapEnrichmentRepository | None,
+    map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> str:
     if source_scope is None:
         return "無法辨識目前聊天室，暫時無法執行 Notion sync。"
@@ -183,6 +197,12 @@ async def _run_notion_sync_command(
     try:
         if force:
             await service.setup_database()
+        await _run_lodging_enrichment_before_notion_sync(
+            repository=map_enrichment_repository,
+            service=map_enrichment_service,
+            force=force,
+            source_scope=source_scope,
+        )
         summary = await run_notion_sync_job(
             repository=repository,
             service=service,
@@ -196,6 +216,33 @@ async def _run_notion_sync_command(
         return f"Notion {action}失敗，請稍後再試。"
 
     return _format_notion_sync_summary(summary=summary, force=force)
+
+
+async def _run_lodging_enrichment_before_notion_sync(
+    *,
+    repository: MapEnrichmentRepository | None,
+    service: LodgingMapEnrichmentService | None,
+    force: bool,
+    source_scope: NotionSyncSourceScope,
+) -> None:
+    if repository is None or service is None:
+        return
+
+    if force:
+        await retry_all_map_enrichment_documents(
+            repository=repository,
+            service=service,
+            limit=None,
+            source_scope=source_scope,
+        )
+        return
+
+    await run_map_enrichment_job(
+        repository=repository,
+        service=service,
+        limit=None,
+        source_scope=source_scope,
+    )
 
 
 async def _run_notion_list_command(
@@ -277,6 +324,8 @@ async def process_events(
     lodging_link_service: LodgingLinkService,
     notion_sync_repository: NotionSyncRepository | None = None,
     notion_sync_service: NotionLodgingSyncService | None = None,
+    map_enrichment_repository: MapEnrichmentRepository | None = None,
+    map_enrichment_service: LodgingMapEnrichmentService | None = None,
 ) -> int:
     captured_total = 0
 
@@ -308,6 +357,8 @@ async def process_events(
             line_client=line_client,
             notion_sync_repository=notion_sync_repository,
             notion_sync_service=notion_sync_service,
+            map_enrichment_repository=map_enrichment_repository,
+            map_enrichment_service=map_enrichment_service,
         ):
             continue
 

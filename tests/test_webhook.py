@@ -12,6 +12,7 @@ from app.lodging_links.common import build_lodging_lookup_keys
 from app.lodging_links.service import LodgingLinkService
 from app.line_security import generate_signature
 from app.main import create_app
+from app.map_enrichment.models import EnrichedLodgingMap, MapEnrichmentCandidate
 from app.models import CapturedLodgingLink
 from app.notion_sync.models import (
     NotionPageResult,
@@ -193,6 +194,76 @@ class FakeNotionSyncService:
                 and candidate.notion_data_source_id == self.data_source_id
             ),
         )
+
+
+class InMemoryMapEnrichmentRepository:
+    def __init__(
+        self,
+        *,
+        pending_items: Sequence[MapEnrichmentCandidate] | None = None,
+        all_items: Sequence[MapEnrichmentCandidate] | None = None,
+    ) -> None:
+        self.pending_items = list(pending_items or [])
+        self.all_items = list(all_items or self.pending_items)
+        self.pending_limits: list[int | None] = []
+        self.all_limits: list[int | None] = []
+        self.pending_source_scopes: list[NotionSyncSourceScope | None] = []
+        self.all_source_scopes: list[NotionSyncSourceScope | None] = []
+        self.resolved: list[str] = []
+        self.failed: list[tuple[str, str]] = []
+
+    def find_pending(
+        self,
+        limit: int | None,
+        source_scope: NotionSyncSourceScope | None = None,
+    ):
+        self.pending_limits.append(limit)
+        self.pending_source_scopes.append(source_scope)
+        items = self.pending_items
+        if limit is None:
+            return items
+        return items[:limit]
+
+    def find_all(
+        self,
+        limit: int | None = None,
+        source_scope: NotionSyncSourceScope | None = None,
+    ):
+        self.all_limits.append(limit)
+        self.all_source_scopes.append(source_scope)
+        items = self.all_items
+        if limit is None:
+            return items
+        return items[:limit]
+
+    def find_failed(
+        self,
+        limit: int,
+        source_scope: NotionSyncSourceScope | None = None,
+    ):
+        raise NotImplementedError
+
+    def find_by_document_id(self, document_id: str):
+        raise NotImplementedError
+
+    def list_documents(self, limit: int, statuses=None):
+        raise NotImplementedError
+
+    def mark_resolved(self, document_id, enrichment: EnrichedLodgingMap) -> None:
+        self.resolved.append(str(document_id))
+
+    def mark_failed(self, document_id, error: str) -> None:
+        self.failed.append((str(document_id), error))
+
+
+class FakeMapEnrichmentService:
+    def __init__(self, results: dict[str, EnrichedLodgingMap | None]) -> None:
+        self.results = results
+        self.calls: list[str] = []
+
+    async def enrich(self, url: str) -> EnrichedLodgingMap | None:
+        self.calls.append(url)
+        return self.results.get(url)
 
 
 def _build_payload(
@@ -552,12 +623,43 @@ def test_line_webhook_runs_pending_notion_sync_command() -> None:
         ]
     )
     notion_service = FakeNotionSyncService()
+    map_enrichment_repository = InMemoryMapEnrichmentRepository(
+        pending_items=[
+            MapEnrichmentCandidate(
+                "doc-1",
+                "https://short.example/doc-1",
+                "https://www.booking.com/hotel/jp/doc-1.html",
+            ),
+            MapEnrichmentCandidate(
+                "doc-2",
+                "https://www.agoda.com/doc-2.html",
+            ),
+        ]
+    )
+    map_enrichment_service = FakeMapEnrichmentService(
+        {
+            "https://www.booking.com/hotel/jp/doc-1.html": EnrichedLodgingMap(
+                property_name="Doc 1 Hotel",
+                latitude=35.1,
+                longitude=139.1,
+                map_source="structured_data_geo",
+            ),
+            "https://www.agoda.com/doc-2.html": EnrichedLodgingMap(
+                property_name="Doc 2 Hotel",
+                latitude=35.2,
+                longitude=139.2,
+                map_source="structured_data_geo",
+            ),
+        }
+    )
     client = TestClient(
         create_app(
             settings=settings,
             collector=repository,
             line_client=fake_line_client,
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            map_enrichment_repository=map_enrichment_repository,
+            map_enrichment_service=map_enrichment_service,
             notion_sync_repository=notion_repository,
             notion_sync_service=notion_service,
         )
@@ -579,6 +681,16 @@ def test_line_webhook_runs_pending_notion_sync_command() -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
+    assert map_enrichment_repository.pending_limits == [None]
+    assert map_enrichment_repository.all_limits == []
+    assert map_enrichment_repository.pending_source_scopes == [
+        NotionSyncSourceScope(source_type="group", group_id="Cgroup123")
+    ]
+    assert map_enrichment_service.calls == [
+        "https://www.booking.com/hotel/jp/doc-1.html",
+        "https://www.agoda.com/doc-2.html",
+    ]
+    assert map_enrichment_repository.resolved == ["doc-1", "doc-2"]
     assert notion_repository.pending_limits == [None]
     assert notion_repository.all_limits == []
     assert notion_repository.pending_source_scopes == [
@@ -622,12 +734,43 @@ def test_line_webhook_runs_force_notion_sync_command() -> None:
         ]
     )
     notion_service = FakeNotionSyncService()
+    map_enrichment_repository = InMemoryMapEnrichmentRepository(
+        all_items=[
+            MapEnrichmentCandidate(
+                "doc-1",
+                "https://short.example/doc-1",
+                "https://www.booking.com/hotel/jp/doc-1.html",
+            ),
+            MapEnrichmentCandidate(
+                "doc-2",
+                "https://www.agoda.com/doc-2.html",
+            ),
+        ]
+    )
+    map_enrichment_service = FakeMapEnrichmentService(
+        {
+            "https://www.booking.com/hotel/jp/doc-1.html": EnrichedLodgingMap(
+                property_name="Doc 1 Hotel",
+                latitude=35.1,
+                longitude=139.1,
+                map_source="structured_data_geo",
+            ),
+            "https://www.agoda.com/doc-2.html": EnrichedLodgingMap(
+                property_name="Doc 2 Hotel",
+                latitude=35.2,
+                longitude=139.2,
+                map_source="structured_data_geo",
+            ),
+        }
+    )
     client = TestClient(
         create_app(
             settings=settings,
             collector=repository,
             line_client=fake_line_client,
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            map_enrichment_repository=map_enrichment_repository,
+            map_enrichment_service=map_enrichment_service,
             notion_sync_repository=notion_repository,
             notion_sync_service=notion_service,
         )
@@ -654,6 +797,16 @@ def test_line_webhook_runs_force_notion_sync_command() -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
+    assert map_enrichment_repository.pending_limits == []
+    assert map_enrichment_repository.all_limits == [None]
+    assert map_enrichment_repository.all_source_scopes == [
+        NotionSyncSourceScope(source_type="room", room_id="Rroom123")
+    ]
+    assert map_enrichment_service.calls == [
+        "https://www.booking.com/hotel/jp/doc-1.html",
+        "https://www.agoda.com/doc-2.html",
+    ]
+    assert map_enrichment_repository.resolved == ["doc-1", "doc-2"]
     assert notion_repository.pending_limits == []
     assert notion_repository.all_limits == [None]
     assert notion_repository.all_source_scopes == [

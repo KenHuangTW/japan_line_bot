@@ -25,12 +25,31 @@ class MongoCollection(Protocol):
     def update_one(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
+class MapEnrichmentSourceScope(Protocol):
+    source_type: str
+    group_id: str | None
+    room_id: str | None
+    user_id: str | None
+
+
 class MapEnrichmentRepository(Protocol):
-    def find_pending(self, limit: int) -> Sequence[MapEnrichmentCandidate]: ...
+    def find_pending(
+        self,
+        limit: int | None,
+        source_scope: MapEnrichmentSourceScope | None = None,
+    ) -> Sequence[MapEnrichmentCandidate]: ...
 
-    def find_all(self, limit: int | None = None) -> Sequence[MapEnrichmentCandidate]: ...
+    def find_all(
+        self,
+        limit: int | None = None,
+        source_scope: MapEnrichmentSourceScope | None = None,
+    ) -> Sequence[MapEnrichmentCandidate]: ...
 
-    def find_failed(self, limit: int) -> Sequence[MapEnrichmentCandidate]: ...
+    def find_failed(
+        self,
+        limit: int,
+        source_scope: MapEnrichmentSourceScope | None = None,
+    ) -> Sequence[MapEnrichmentCandidate]: ...
 
     def find_by_document_id(self, document_id: str) -> MapEnrichmentCandidate | None: ...
 
@@ -54,7 +73,11 @@ class MongoMapEnrichmentRepository:
         self.collection = collection
         self.max_retry_count = max_retry_count
 
-    def find_pending(self, limit: int) -> Sequence[MapEnrichmentCandidate]:
+    def find_pending(
+        self,
+        limit: int | None,
+        source_scope: MapEnrichmentSourceScope | None = None,
+    ) -> Sequence[MapEnrichmentCandidate]:
         return self._find_candidates(
             {
                 "$or": [
@@ -78,15 +101,25 @@ class MongoMapEnrichmentRepository:
                 ]
             },
             limit=limit,
+            source_scope=source_scope,
         )
 
-    def find_all(self, limit: int | None = None) -> Sequence[MapEnrichmentCandidate]:
-        return self._find_candidates({}, limit=limit)
+    def find_all(
+        self,
+        limit: int | None = None,
+        source_scope: MapEnrichmentSourceScope | None = None,
+    ) -> Sequence[MapEnrichmentCandidate]:
+        return self._find_candidates({}, limit=limit, source_scope=source_scope)
 
-    def find_failed(self, limit: int) -> Sequence[MapEnrichmentCandidate]:
+    def find_failed(
+        self,
+        limit: int,
+        source_scope: MapEnrichmentSourceScope | None = None,
+    ) -> Sequence[MapEnrichmentCandidate]:
         return self._find_candidates(
             {"map_status": "failed"},
             limit=limit,
+            source_scope=source_scope,
         )
 
     def find_by_document_id(self, document_id: str) -> MapEnrichmentCandidate | None:
@@ -113,8 +146,10 @@ class MongoMapEnrichmentRepository:
         query: dict[str, Any],
         *,
         limit: int | None,
+        source_scope: MapEnrichmentSourceScope | None = None,
     ) -> Sequence[MapEnrichmentCandidate]:
-        cursor = self.collection.find(query).sort("captured_at", 1)
+        scoped_query = _apply_source_scope_query(query, source_scope)
+        cursor = self.collection.find(scoped_query).sort("captured_at", 1)
         if limit is not None:
             cursor = cursor.limit(limit)
 
@@ -307,13 +342,35 @@ def _coerce_object_id(document_id: str) -> Any | None:
         return None
 
 
+def _apply_source_scope_query(
+    query: dict[str, Any],
+    source_scope: MapEnrichmentSourceScope | None,
+) -> dict[str, Any]:
+    if source_scope is None:
+        return query
+
+    source_query: dict[str, Any] = {"source_type": source_scope.source_type}
+    if source_scope.source_type == "group" and source_scope.group_id:
+        source_query["group_id"] = source_scope.group_id
+    elif source_scope.source_type == "room" and source_scope.room_id:
+        source_query["room_id"] = source_scope.room_id
+    elif source_scope.source_type == "user" and source_scope.user_id:
+        source_query["user_id"] = source_scope.user_id
+
+    if not query:
+        return source_query
+    return {"$and": [query, source_query]}
+
+
 async def run_map_enrichment_job(
     repository: MapEnrichmentRepository,
     service: LodgingMapEnrichmentService,
-    limit: int,
+    limit: int | None,
+    *,
+    source_scope: MapEnrichmentSourceScope | None = None,
 ) -> MapEnrichmentSummary:
     return await _run_map_enrichment_candidates(
-        candidates=repository.find_pending(limit),
+        candidates=repository.find_pending(limit, source_scope),
         repository=repository,
         service=service,
     )
@@ -323,9 +380,11 @@ async def retry_all_map_enrichment_documents(
     repository: MapEnrichmentRepository,
     service: LodgingMapEnrichmentService,
     limit: int | None = None,
+    *,
+    source_scope: MapEnrichmentSourceScope | None = None,
 ) -> MapEnrichmentSummary:
     return await _run_map_enrichment_candidates(
-        candidates=repository.find_all(limit),
+        candidates=repository.find_all(limit, source_scope),
         repository=repository,
         service=service,
     )
@@ -335,11 +394,14 @@ async def retry_all_failed_map_enrichment_documents(
     repository: MapEnrichmentRepository,
     service: LodgingMapEnrichmentService,
     limit: int,
+    *,
+    source_scope: MapEnrichmentSourceScope | None = None,
 ) -> MapEnrichmentSummary:
     return await retry_all_map_enrichment_documents(
         repository=repository,
         service=service,
         limit=limit,
+        source_scope=source_scope,
     )
 
 

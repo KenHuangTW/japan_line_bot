@@ -19,15 +19,29 @@ class InMemoryMapEnrichmentRepository:
         self.resolved: dict[str, EnrichedLodgingMap] = {}
         self.failed: dict[str, str] = {}
 
-    def find_pending(self, limit: int) -> Sequence[MapEnrichmentCandidate]:
-        return self.items[:limit]
-
-    def find_all(self, limit: int | None = None) -> Sequence[MapEnrichmentCandidate]:
+    def find_pending(
+        self,
+        limit: int | None,
+        source_scope=None,
+    ) -> Sequence[MapEnrichmentCandidate]:
         if limit is None:
             return self.items
         return self.items[:limit]
 
-    def find_failed(self, limit: int) -> Sequence[MapEnrichmentCandidate]:
+    def find_all(
+        self,
+        limit: int | None = None,
+        source_scope=None,
+    ) -> Sequence[MapEnrichmentCandidate]:
+        if limit is None:
+            return self.items
+        return self.items[:limit]
+
+    def find_failed(
+        self,
+        limit: int,
+        source_scope=None,
+    ) -> Sequence[MapEnrichmentCandidate]:
         return self.items[:limit]
 
     def mark_resolved(
