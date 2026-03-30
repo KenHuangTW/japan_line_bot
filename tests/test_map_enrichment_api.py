@@ -69,7 +69,7 @@ class InMemoryMapEnrichmentRepository:
             ),
         }
 
-    def find_pending(self, limit: int):
+    def find_pending(self, limit: int | None, source_scope=None):
         candidates: list[MapEnrichmentCandidate] = []
         for document in self.documents.values():
             if document.map_status == "pending":
@@ -80,9 +80,11 @@ class InMemoryMapEnrichmentRepository:
                         resolved_url=document.resolved_url,
                     )
                 )
+        if limit is None:
+            return candidates
         return candidates[:limit]
 
-    def find_all(self, limit: int | None = None):
+    def find_all(self, limit: int | None = None, source_scope=None):
         items = sorted(
             self.documents.values(),
             key=lambda item: item.captured_at or datetime.min.replace(tzinfo=timezone.utc),
@@ -99,7 +101,7 @@ class InMemoryMapEnrichmentRepository:
             return candidates
         return candidates[:limit]
 
-    def find_failed(self, limit: int):
+    def find_failed(self, limit: int, source_scope=None):
         candidates: list[MapEnrichmentCandidate] = []
         for document in self.documents.values():
             if document.map_status == "failed":
