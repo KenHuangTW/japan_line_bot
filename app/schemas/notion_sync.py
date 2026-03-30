@@ -16,6 +16,8 @@ class NotionSetupResponse(BaseModel):
     database_id: str
     data_source_id: str
     database_title: str | None = None
+    database_url: str | None = None
+    database_public_url: str | None = None
 
 
 class NotionSyncRunRequest(BaseModel):

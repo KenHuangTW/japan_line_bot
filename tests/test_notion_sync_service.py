@@ -24,6 +24,7 @@ from app.notion_sync.service import (
 class FakeNotionClient:
     def __init__(self) -> None:
         self.created_databases: list[tuple[str, str]] = []
+        self.retrieved_databases: list[str] = []
         self.updated_data_sources: list[tuple[str, str, dict[str, object]]] = []
         self.retrieved_pages: dict[str, dict[str, object]] = {}
         self.created_pages: list[tuple[str, dict[str, object]]] = []
@@ -41,7 +42,23 @@ class FakeNotionClient:
             database_id="db-created",
             data_source_id="ds-created",
             title=title,
+            url="https://www.notion.so/workspace/db-created?v=view-created",
+            public_url="https://www.notion.so/public-db-created",
         )
+
+    async def retrieve_database(
+        self,
+        *,
+        database_id: str,
+    ) -> dict[str, object]:
+        self.retrieved_databases.append(database_id)
+        return {
+            "id": database_id,
+            "title": [{"type": "text", "text": {"content": "住宿清單"}}],
+            "url": f"https://www.notion.so/workspace/{database_id}?v=view-shared",
+            "public_url": f"https://www.notion.so/public-{database_id}",
+            "data_sources": [{"id": "ds-existing"}],
+        }
 
     async def retrieve_data_source(
         self,
@@ -178,6 +195,22 @@ def test_setup_database_updates_existing_data_source_schema() -> None:
     assert target.database_id == "db-existing"
     assert target.data_source_id == "ds-existing"
     assert target.title == "住宿清單"
+    assert target.url == "https://www.notion.so/workspace/db-existing?v=view-shared"
+    assert target.public_url == "https://www.notion.so/public-db-existing"
+
+
+def test_get_database_url_prefers_public_url_from_retrieved_database() -> None:
+    client = FakeNotionClient()
+    service = NotionLodgingSyncService(
+        client,
+        database_id="db-existing",
+        data_source_id="ds-existing",
+    )
+
+    result = asyncio.run(service.get_database_url(prefer_public=True))
+
+    assert result == "https://www.notion.so/public-db-existing"
+    assert client.retrieved_databases == ["db-existing"]
 
 
 def test_build_notion_data_source_update_properties_renames_and_removes_old_fields() -> None:

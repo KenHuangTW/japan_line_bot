@@ -154,8 +154,19 @@ class FakeNotionSyncService:
     def __init__(self, *, is_sync_configured: bool = True) -> None:
         self.database_id = "db-current" if is_sync_configured else ""
         self.data_source_id = "ds-current" if is_sync_configured else ""
+        self.database_url = (
+            "https://www.notion.so/workspace/Trip-Lodgings-dbcurrent?v=view-current"
+            if is_sync_configured
+            else ""
+        )
+        self.public_database_url = (
+            "https://www.notion.so/public-trip-lodgings"
+            if is_sync_configured
+            else ""
+        )
         self.calls: list[str] = []
         self.setup_calls: list[str | None] = []
+        self.database_url_calls: list[bool] = []
 
     @property
     def is_sync_configured(self) -> bool:
@@ -164,6 +175,12 @@ class FakeNotionSyncService:
     async def setup_database(self, title: str | None = None):
         self.setup_calls.append(title)
         return None
+
+    async def get_database_url(self, *, prefer_public: bool = True) -> str | None:
+        self.database_url_calls.append(prefer_public)
+        if prefer_public:
+            return self.public_database_url or self.database_url or None
+        return self.database_url or self.public_database_url or None
 
     async def sync_document(self, candidate: NotionSyncCandidate) -> NotionPageResult:
         document_id = str(candidate.document_id)
@@ -396,6 +413,84 @@ def test_line_webhook_replies_pong_for_ping_command() -> None:
     assert fake_line_client.calls == [("reply-token", "pong")]
 
 
+def test_line_webhook_replies_notion_link_for_list_command() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    notion_service = FakeNotionSyncService()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            notion_sync_service=notion_service,
+        )
+    )
+
+    payload = _build_payload("/清單")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert repository.items == []
+    assert notion_service.database_url_calls == [True]
+    assert fake_line_client.calls == [("reply-token", "https://www.notion.so/public-trip-lodgings")]
+
+
+def test_line_webhook_prefers_refreshed_public_link_over_cached_internal_link() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        notion_database_url="https://www.notion.so/44155b3c938c4e6e8cea913a7927b7b",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    notion_service = FakeNotionSyncService()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            notion_sync_service=notion_service,
+        )
+    )
+
+    payload = _build_payload("/清單")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert repository.items == []
+    assert notion_service.database_url_calls == [True]
+    assert settings.notion_public_database_url == "https://www.notion.so/public-trip-lodgings"
+    assert fake_line_client.calls == [("reply-token", "https://www.notion.so/public-trip-lodgings")]
+
+
 def test_line_webhook_runs_pending_notion_sync_command() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
@@ -558,6 +653,41 @@ def test_line_webhook_reports_when_notion_sync_is_not_configured() -> None:
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
     assert fake_line_client.calls == [("reply-token", "Notion sync 尚未設定完成。")]
+
+
+def test_line_webhook_reports_when_notion_list_link_is_not_configured() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+        )
+    )
+
+    payload = _build_payload("/清單")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert repository.items == []
+    assert fake_line_client.calls == [("reply-token", "Notion 清單連結尚未設定完成。")]
 
 
 def test_line_webhook_reports_when_chat_source_cannot_be_identified() -> None:

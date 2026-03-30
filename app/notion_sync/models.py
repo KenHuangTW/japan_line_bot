@@ -10,6 +10,12 @@ class NotionDatabaseTarget:
     database_id: str
     data_source_id: str
     title: str | None = None
+    url: str | None = None
+    public_url: str | None = None
+
+    @property
+    def share_url(self) -> str | None:
+        return self.public_url or self.url
 
 
 @dataclass(frozen=True)

@@ -88,6 +88,12 @@ class NotionClient(Protocol):
         title: str,
     ) -> NotionDatabaseTarget: ...
 
+    async def retrieve_database(
+        self,
+        *,
+        database_id: str,
+    ) -> dict[str, Any]: ...
+
     async def retrieve_data_source(
         self,
         *,
@@ -167,6 +173,13 @@ class HttpNotionClient:
 
         return await self._retrieve_database_target(database_id)
 
+    async def retrieve_database(
+        self,
+        *,
+        database_id: str,
+    ) -> dict[str, Any]:
+        return await self._request("GET", f"/databases/{database_id}")
+
     async def retrieve_data_source(
         self,
         *,
@@ -230,7 +243,7 @@ class HttpNotionClient:
         return _extract_page_result(payload, created=False)
 
     async def _retrieve_database_target(self, database_id: str) -> NotionDatabaseTarget:
-        payload = await self._request("GET", f"/databases/{database_id}")
+        payload = await self.retrieve_database(database_id=database_id)
         target = _extract_database_target(payload)
         if target is None:
             raise RuntimeError(
@@ -279,12 +292,16 @@ class NotionLodgingSyncService:
         database_id: str = "",
         data_source_id: str = "",
         database_title: str = DEFAULT_NOTION_DATABASE_TITLE,
+        database_url: str = "",
+        public_database_url: str = "",
     ) -> None:
         self.client = client
         self.parent_page_id = parent_page_id.strip()
         self.database_id = database_id.strip()
         self.data_source_id = data_source_id.strip()
         self.database_title = database_title.strip() or DEFAULT_NOTION_DATABASE_TITLE
+        self.database_url = database_url.strip()
+        self.public_database_url = public_database_url.strip()
 
     @property
     def is_setup_configured(self) -> bool:
@@ -307,16 +324,22 @@ class NotionLodgingSyncService:
             )
             self.configure_target(
                 database_id=_extract_parent_database_id(updated_data_source)
+                or _extract_parent_database_id(data_source)
                 or self.database_id,
                 data_source_id=str(updated_data_source.get("id") or self.data_source_id),
             )
             self.database_title = (
                 _extract_plain_text(updated_data_source.get("title")) or target_title
             )
+            target = await self.refresh_database_target()
+            if target is not None:
+                return target
             return NotionDatabaseTarget(
                 database_id=self.database_id,
                 data_source_id=self.data_source_id,
                 title=self.database_title,
+                url=self.database_url or None,
+                public_url=self.public_database_url or None,
             )
 
         if not self.parent_page_id:
@@ -329,10 +352,57 @@ class NotionLodgingSyncService:
         self.configure_target(
             database_id=target.database_id,
             data_source_id=target.data_source_id,
+            database_url=target.url,
+            public_database_url=target.public_url,
         )
         if target.title:
             self.database_title = target.title
-        return target
+        return NotionDatabaseTarget(
+            database_id=self.database_id,
+            data_source_id=self.data_source_id,
+            title=self.database_title,
+            url=self.database_url or None,
+            public_url=self.public_database_url or None,
+        )
+
+    async def get_database_url(self, *, prefer_public: bool = True) -> str | None:
+        if prefer_public and self.public_database_url:
+            return self.public_database_url
+        if not prefer_public and self.database_url:
+            return self.database_url
+        if self.database_id:
+            target = await self.refresh_database_target()
+            if target is not None:
+                if prefer_public and target.public_url:
+                    return target.public_url
+                if target.url:
+                    return target.url
+                if not prefer_public and target.public_url:
+                    return target.public_url
+        return self.public_database_url or self.database_url or None
+
+    async def refresh_database_target(self) -> NotionDatabaseTarget | None:
+        if not self.database_id:
+            return None
+        payload = await self.client.retrieve_database(database_id=self.database_id)
+        target = _extract_database_target(payload)
+        if target is None:
+            return None
+        self.configure_target(
+            database_id=target.database_id,
+            data_source_id=self.data_source_id or target.data_source_id,
+            database_url=target.url,
+            public_database_url=target.public_url,
+        )
+        if target.title:
+            self.database_title = target.title
+        return NotionDatabaseTarget(
+            database_id=self.database_id,
+            data_source_id=self.data_source_id,
+            title=self.database_title,
+            url=self.database_url or None,
+            public_url=self.public_database_url or None,
+        )
 
     async def sync_document(self, candidate: NotionSyncCandidate) -> NotionPageResult:
         if not self.data_source_id:
@@ -354,9 +424,20 @@ class NotionLodgingSyncService:
             properties=properties,
         )
 
-    def configure_target(self, *, database_id: str, data_source_id: str) -> None:
+    def configure_target(
+        self,
+        *,
+        database_id: str,
+        data_source_id: str,
+        database_url: str | None = None,
+        public_database_url: str | None = None,
+    ) -> None:
         self.database_id = database_id.strip()
         self.data_source_id = data_source_id.strip()
+        if database_url is not None:
+            self.database_url = database_url.strip()
+        if public_database_url is not None:
+            self.public_database_url = public_database_url.strip()
 
     async def _should_update_existing_page(
         self,
@@ -511,6 +592,8 @@ def _extract_database_target(payload: dict[str, Any]) -> NotionDatabaseTarget | 
         database_id=database_id,
         data_source_id=data_source_id,
         title=_extract_plain_text(payload.get("title")),
+        url=_extract_url(payload.get("url")),
+        public_url=_extract_url(payload.get("public_url")),
     )
 
 
@@ -553,6 +636,12 @@ def _extract_plain_text(value: Any) -> str | None:
     if not texts:
         return None
     return "".join(texts)
+
+
+def _extract_url(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _rich_text_value(value: str | None) -> list[dict[str, Any]]:
