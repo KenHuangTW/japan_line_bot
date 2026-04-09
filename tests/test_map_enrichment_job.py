@@ -160,6 +160,40 @@ def test_run_map_enrichment_job_marks_partial_when_only_search_metadata_exists()
     assert repository.resolved["doc-1"].google_maps_search_url is not None
 
 
+def test_run_map_enrichment_job_marks_airbnb_partial_metadata_as_partial() -> None:
+    url = "https://www.airbnb.com/rooms/123456789"
+    repository = InMemoryMapEnrichmentRepository(
+        [MapEnrichmentCandidate("doc-airbnb", url)]
+    )
+    service = FakeMapEnrichmentService(
+        results={
+            url: EnrichedLodgingMap(
+                resolved_url=url,
+                resolved_hostname="airbnb.com",
+                property_name="Shinjuku Loft",
+                google_maps_search_url=(
+                    "https://www.google.com/maps/search/?api=1&query=Shinjuku+Loft"
+                ),
+                map_source="airbnb_html_title_fallback",
+            )
+        }
+    )
+
+    summary = asyncio.run(
+        run_map_enrichment_job(
+            repository=repository,
+            service=service,
+            limit=10,
+        )
+    )
+
+    assert summary.processed == 1
+    assert summary.resolved == 0
+    assert summary.partial == 1
+    assert summary.failed == 0
+    assert repository.resolved["doc-airbnb"].resolved_hostname == "airbnb.com"
+
+
 def test_retry_all_map_enrichment_documents_processes_all_candidates() -> None:
     failed_url = "https://www.booking.com/hotel/jp/retry-me.html"
     resolved_url = "https://www.booking.com/hotel/jp/already-resolved.html"

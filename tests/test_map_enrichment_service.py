@@ -377,3 +377,87 @@ def test_lodging_map_enrichment_service_marks_agoda_property_as_sold_out() -> No
     assert enriched.property_name == "Sold Out Stay"
     assert enriched.is_sold_out is True
     assert enriched.availability_source == "agoda_secondary_data_sold_out"
+
+
+def test_lodging_map_enrichment_service_enriches_airbnb_structured_data() -> None:
+    url = "https://www.airbnb.com/rooms/123456789"
+    html = """
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "VacationRental",
+            "name": "Shinjuku Loft",
+            "address": {
+              "@type": "PostalAddress",
+              "streetAddress": "1-2-3 Kabukicho",
+              "addressLocality": "Tokyo",
+              "addressRegion": "Tokyo",
+              "addressCountry": "JP"
+            },
+            "numberOfBedrooms": 1,
+            "numberOfBathroomsTotal": 1,
+            "amenityFeature": [
+              {"name": "Kitchen", "value": true},
+              {"name": "Washer", "value": true}
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "24000",
+              "priceCurrency": "JPY"
+            },
+            "geo": {
+              "@type": "GeoCoordinates",
+              "latitude": 35.69384,
+              "longitude": 139.70355
+            }
+          }
+        </script>
+      </head>
+    </html>
+    """
+    service = LodgingMapEnrichmentService(
+        FakePageFetcher({url: html}),
+        price_converter=FakePriceConverter({"JPY": 0.2}),
+    )
+
+    enriched = asyncio.run(service.enrich(url))
+
+    assert enriched is not None
+    assert enriched.resolved_url == url
+    assert enriched.resolved_hostname == "airbnb.com"
+    assert enriched.property_name == "Shinjuku Loft"
+    assert enriched.city == "東京"
+    assert enriched.country_code == "JP"
+    assert enriched.property_type == "度假出租"
+    assert enriched.amenities == ("廚房", "洗衣機")
+    assert enriched.price_amount == 4800
+    assert enriched.price_currency == "TWD"
+    assert enriched.source_price_amount == 24000
+    assert enriched.source_price_currency == "JPY"
+    assert enriched.map_source == "structured_data_geo"
+
+
+def test_lodging_map_enrichment_service_falls_back_to_airbnb_title() -> None:
+    url = "https://www.airbnb.com.tw/rooms/123456789"
+    html = """
+    <html>
+      <head><title>Shinjuku Loft - Airbnb</title></head>
+      <body><div>Limited public metadata</div></body>
+    </html>
+    """
+    service = LodgingMapEnrichmentService(FakePageFetcher({url: html}))
+
+    enriched = asyncio.run(service.enrich(url))
+
+    assert enriched is not None
+    assert enriched.resolved_hostname == "airbnb.com.tw"
+    assert enriched.property_name == "Shinjuku Loft"
+    assert enriched.latitude is None
+    assert enriched.longitude is None
+    assert enriched.map_source == "airbnb_html_title_fallback"
+    assert enriched.google_maps_url is None
+    assert enriched.google_maps_search_url is not None
+    query = parse_qs(urlsplit(enriched.google_maps_search_url).query)
+    assert query["query"] == ["Shinjuku Loft"]

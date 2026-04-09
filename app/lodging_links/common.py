@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit, urlunsplit
 
-OPTIONAL_WWW_HOSTNAMES = frozenset({"booking.com", "agoda.com"})
+OPTIONAL_WWW_HOSTNAMES = frozenset(
+    {"booking.com", "agoda.com", "airbnb.com", "airbnb.com.tw"}
+)
 
 
 def normalize_hostname(hostname: str | None) -> str:

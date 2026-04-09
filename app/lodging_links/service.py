@@ -5,6 +5,7 @@ from typing import Sequence
 from urllib.parse import urlsplit
 
 from app.lodging_links.agoda import classify_agoda_url
+from app.lodging_links.airbnb import classify_airbnb_url
 from app.lodging_links.booking import classify_booking_url
 from app.lodging_links.common import normalize_hostname
 from app.lodging_links.resolver import LodgingUrlResolver
@@ -34,14 +35,20 @@ class LodgingLinkService:
         self,
         match: LodgingLinkMatch,
     ) -> LodgingLinkMatch | None:
+        if match.platform == "airbnb":
+            return await self._resolve_supported_link_candidate(
+                match=match,
+                classify_url=classify_airbnb_url,
+                platform_label="Airbnb",
+            )
         if match.platform == "agoda":
-            return await self._resolve_short_link_candidate(
+            return await self._resolve_supported_link_candidate(
                 match=match,
                 classify_url=classify_agoda_url,
                 platform_label="Agoda",
             )
         if match.platform == "booking":
-            return await self._resolve_short_link_candidate(
+            return await self._resolve_supported_link_candidate(
                 match=match,
                 classify_url=classify_booking_url,
                 platform_label="Booking.com",
@@ -53,7 +60,7 @@ class LodgingLinkService:
             resolved_hostname=match.hostname,
         )
 
-    async def _resolve_short_link_candidate(
+    async def _resolve_supported_link_candidate(
         self,
         match: LodgingLinkMatch,
         classify_url,
