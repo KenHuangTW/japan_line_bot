@@ -62,11 +62,13 @@ class Settings(BaseModel):
     line_channel_access_token: str = ""
     line_reply_on_capture: bool = True
     line_welcome_message: str = (
-        "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會自動整理並同步到 Notion。"
+        "已加入群組。之後只要貼 Booking、Agoda 或 Airbnb 的住宿連結，我就會自動整理並同步到 Notion。"
     )
     reply_capture_template: str = "已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。"
     reply_duplicate_link_template: str = "你是不是在找這個\n{url}"
-    supported_domains: tuple[str, ...] = Field(default=("booking.com", "agoda.com"))
+    supported_domains: tuple[str, ...] = Field(
+        default=("booking.com", "agoda.com", "airbnb.com", "airbnb.com.tw")
+    )
     map_enrichment_batch_size: int = 20
     map_enrichment_request_timeout: float = 10.0
     map_enrichment_max_retry_count: int = 3
@@ -77,6 +79,7 @@ class Settings(BaseModel):
     notion_database_title: str = DEFAULT_NOTION_DATABASE_TITLE
     notion_database_url: str = ""
     notion_public_database_url: str = ""
+    notion_target_collection: str = "notion_targets"
     notion_api_version: str = NOTION_API_VERSION
     notion_request_timeout: float = 10.0
     notion_sync_batch_size: int = 20
@@ -113,7 +116,7 @@ class Settings(BaseModel):
             line_reply_on_capture=_env_bool("LINE_REPLY_ON_CAPTURE", True),
             line_welcome_message=os.getenv(
                 "LINE_WELCOME_MESSAGE",
-                "已加入群組。之後只要貼 Booking 或 Agoda 的住宿連結，我就會自動整理並同步到 Notion。",
+                "已加入群組。之後只要貼 Booking、Agoda 或 Airbnb 的住宿連結，我就會自動整理並同步到 Notion。",
             ),
             reply_capture_template=os.getenv(
                 "REPLY_CAPTURE_TEMPLATE",
@@ -124,7 +127,8 @@ class Settings(BaseModel):
                 "你是不是在找這個\n{url}",
             ),
             supported_domains=_env_csv(
-                "SUPPORTED_DOMAINS", ("booking.com", "agoda.com")
+                "SUPPORTED_DOMAINS",
+                ("booking.com", "agoda.com", "airbnb.com", "airbnb.com.tw"),
             ),
             map_enrichment_batch_size=int(
                 os.getenv("MAP_ENRICHMENT_BATCH_SIZE", "20")
@@ -145,6 +149,9 @@ class Settings(BaseModel):
             notion_database_url=os.getenv("NOTION_DATABASE_URL", ""),
             notion_public_database_url=os.getenv(
                 "NOTION_PUBLIC_DATABASE_URL", ""
+            ),
+            notion_target_collection=os.getenv(
+                "NOTION_TARGET_COLLECTION", "notion_targets"
             ),
             notion_api_version=os.getenv("NOTION_API_VERSION", NOTION_API_VERSION),
             notion_request_timeout=float(

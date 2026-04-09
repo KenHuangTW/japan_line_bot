@@ -37,6 +37,11 @@ def test_lodging_link_service_keeps_direct_lodging_links() -> None:
             url="https://www.agoda.com/zh-tw/bar-hotel/hotel/tokyo-jp.html",
             hostname="agoda.com",
         ),
+        LodgingLinkMatch(
+            platform="airbnb",
+            url="https://www.airbnb.com/ja/rooms/123456789?check_in=2026-04-10",
+            hostname="airbnb.com",
+        ),
     ]
 
     resolved_matches = asyncio.run(service.filter_supported_lodging_links(matches))
@@ -44,10 +49,12 @@ def test_lodging_link_service_keeps_direct_lodging_links() -> None:
     assert [item.url for item in resolved_matches] == [
         "https://www.booking.com/hotel/jp/foo.html",
         "https://www.agoda.com/zh-tw/bar-hotel/hotel/tokyo-jp.html",
+        "https://www.airbnb.com/ja/rooms/123456789?check_in=2026-04-10",
     ]
     assert [item.resolved_url for item in resolved_matches] == [
         "https://www.booking.com/hotel/jp/foo.html",
         "https://www.agoda.com/zh-tw/bar-hotel/hotel/tokyo-jp.html",
+        "https://www.airbnb.com/ja/rooms/123456789?check_in=2026-04-10",
     ]
     assert resolver.calls == []
 
@@ -83,6 +90,28 @@ def test_lodging_link_service_filters_non_lodging_booking_links() -> None:
             url="https://www.booking.com/searchresults.zh-tw.html?ss=Tokyo",
             hostname="booking.com",
         )
+    ]
+
+    resolved_matches = asyncio.run(service.filter_supported_lodging_links(matches))
+
+    assert resolved_matches == []
+    assert resolver.calls == []
+
+
+def test_lodging_link_service_filters_non_lodging_airbnb_links() -> None:
+    resolver = FakeLodgingUrlResolver()
+    service = LodgingLinkService(resolver)
+    matches = [
+        LodgingLinkMatch(
+            platform="airbnb",
+            url="https://www.airbnb.com/s/Tokyo/homes",
+            hostname="airbnb.com",
+        ),
+        LodgingLinkMatch(
+            platform="airbnb",
+            url="https://www.airbnb.com/wishlists/123456789",
+            hostname="airbnb.com",
+        ),
     ]
 
     resolved_matches = asyncio.run(service.filter_supported_lodging_links(matches))

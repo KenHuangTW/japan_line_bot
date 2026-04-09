@@ -140,6 +140,10 @@ def test_build_notion_data_source_properties_only_includes_expected_fields() -> 
         LAST_UPDATED_PROPERTY,
         DOCUMENT_ID_PROPERTY,
     ]
+    assert {
+        option["name"]
+        for option in properties[PLATFORM_PROPERTY]["select"]["options"]
+    } >= {"booking", "agoda", "airbnb", "unknown"}
 
 
 def test_build_notion_page_properties_uses_reduced_readable_fields() -> None:
@@ -172,6 +176,24 @@ def test_build_notion_page_properties_uses_reduced_readable_fields() -> None:
     assert properties[AMENITIES_PROPERTY]["rich_text"][0]["text"]["content"] == "Wi-Fi, 早餐"
     assert properties[LAST_UPDATED_PROPERTY]["date"]["start"] == "2026-03-27T08:30:00+00:00"
     assert properties[DOCUMENT_ID_PROPERTY]["rich_text"][0]["text"]["content"] == "doc-123"
+
+
+def test_build_notion_page_properties_keeps_airbnb_platform() -> None:
+    candidate = NotionSyncCandidate(
+        document_id="doc-airbnb",
+        platform="airbnb",
+        url="https://www.airbnb.com/rooms/123456789",
+        property_name="Shinjuku Loft",
+        captured_at=datetime(2026, 3, 27, 8, 30, tzinfo=timezone.utc),
+    )
+
+    properties = build_notion_page_properties(candidate)
+
+    assert properties[PLATFORM_PROPERTY]["select"]["name"] == "airbnb"
+    assert (
+        properties[LODGING_URL_PROPERTY]["url"]
+        == "https://www.airbnb.com/rooms/123456789"
+    )
 
 
 def test_setup_database_updates_existing_data_source_schema() -> None:
@@ -233,6 +255,10 @@ def test_build_notion_data_source_update_properties_renames_and_removes_old_fiel
     assert properties["captured-id"]["name"] == LAST_UPDATED_PROPERTY
     assert properties["document-id"]["name"] == DOCUMENT_ID_PROPERTY
     assert properties["city-id"] is None
+    assert {
+        option["name"]
+        for option in properties["platform-id"]["select"]["options"]
+    } >= {"booking", "agoda", "airbnb", "unknown"}
     assert LODGING_URL_PROPERTY in properties
     assert GOOGLE_MAPS_PROPERTY in properties
 

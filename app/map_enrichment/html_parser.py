@@ -6,6 +6,7 @@ from html import unescape
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
+from app.lodging_links.airbnb import is_airbnb_hostname
 from app.map_enrichment.models import ParsedLodgingMap
 
 JSON_LD_SCRIPT_PATTERN = re.compile(
@@ -86,6 +87,7 @@ def parse_lodging_map_from_url(
     url: str,
     *,
     map_source: str = "url_slug_fallback",
+    html: str | None = None,
 ) -> ParsedLodgingMap | None:
     parsed_url = urlsplit(url)
     hostname = (parsed_url.hostname or "").lower()
@@ -94,10 +96,9 @@ def parse_lodging_map_from_url(
         return None
 
     property_slug = _extract_property_slug_from_path(hostname, path)
-    if property_slug is None:
-        return None
-
-    property_name = _humanize_slug(property_slug)
+    property_name = _humanize_slug(property_slug) if property_slug is not None else None
+    if property_name is None and is_airbnb_hostname(hostname) and html:
+        property_name = _extract_title(html)
     if property_name is None:
         return None
 
@@ -716,7 +717,9 @@ def _extract_title(html: str) -> str | None:
     if title is None:
         return None
 
-    return re.sub(r"\s+\|\s+Booking\.com$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s+\|\s+Booking\.com$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*(?:\||-)\s*Airbnb$", "", title, flags=re.IGNORECASE)
+    return title.strip() or None
 
 
 def _strip_tags(value: str) -> str | None:

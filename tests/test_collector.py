@@ -77,11 +77,16 @@ class FakeMongoClient:
         self.closed = True
 
 
-def _sample_link(url: str) -> CapturedLodgingLink:
+def _sample_link(
+    url: str,
+    *,
+    platform: str = "booking",
+    hostname: str = "www.booking.com",
+) -> CapturedLodgingLink:
     return CapturedLodgingLink(
-        platform="booking",
+        platform=platform,
         url=url,
-        hostname="www.booking.com",
+        hostname=hostname,
         message_text=f"請看 {url}",
         source_type="group",
         group_id="Cgroup123",
@@ -211,6 +216,31 @@ def test_mongo_captured_link_repository_matches_duplicates_ignoring_query_string
 
     assert duplicate is not None
     assert duplicate.url == "https://www.agoda.com/sp/B70FF37xamn"
+
+
+def test_mongo_captured_link_repository_matches_airbnb_duplicates_ignoring_www_and_query_string() -> None:
+    collection = FakeCollection()
+    repository = MongoCapturedLinkRepository(collection)
+    collection.documents.append(
+        _sample_link(
+            "https://www.airbnb.com/rooms/123456789?check_in=2026-04-10",
+            platform="airbnb",
+            hostname="www.airbnb.com",
+        ).model_dump(mode="python")
+        | {
+            "resolved_url": "https://www.airbnb.com/rooms/123456789?check_in=2026-04-10",
+            "resolved_hostname": "www.airbnb.com",
+        }
+    )
+
+    duplicate = repository.find_duplicate(
+        ["https://airbnb.com/rooms/123456789"],
+        source_type="group",
+        group_id="Cgroup123",
+    )
+
+    assert duplicate is not None
+    assert duplicate.url == "https://www.airbnb.com/rooms/123456789?check_in=2026-04-10"
 
 
 def test_create_collector_uses_mongo_backend() -> None:

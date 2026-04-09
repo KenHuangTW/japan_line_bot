@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.lodging_links.agoda import classify_agoda_url
+from app.lodging_links.airbnb import classify_airbnb_url, is_airbnb_hostname
 from app.lodging_links.booking import classify_booking_url
 from app.lodging_links.common import normalize_hostname
 from app.lodging_links.resolver import DEFAULT_BROWSER_HEADERS, LodgingUrlResolver
@@ -65,6 +66,7 @@ class LodgingMapEnrichmentService:
         if parsed is None:
             parsed = parse_lodging_map_from_url(
                 target_url,
+                html=html,
                 map_source=_infer_url_fallback_source(target_url, html),
             )
         if parsed is None:
@@ -201,6 +203,10 @@ class LodgingMapEnrichmentService:
 
 
 def _get_resolution_plan(url: str) -> tuple[object, str] | None:
+    airbnb_kind = classify_airbnb_url(url)
+    if airbnb_kind != "unknown":
+        return classify_airbnb_url, airbnb_kind
+
     agoda_kind = classify_agoda_url(url)
     if agoda_kind != "unknown":
         return classify_agoda_url, agoda_kind
@@ -296,6 +302,8 @@ def _infer_url_fallback_source(url: str, html: str) -> str:
     hostname = normalize_hostname(urlsplit(url).hostname)
     if hostname == "booking.com" and _looks_like_booking_challenge_page(html):
         return "booking_challenge_url_fallback"
+    if is_airbnb_hostname(hostname):
+        return "airbnb_html_title_fallback"
     return "url_slug_fallback"
 
 

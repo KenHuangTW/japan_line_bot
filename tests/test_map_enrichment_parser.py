@@ -124,3 +124,66 @@ def test_parse_lodging_map_detects_visible_sold_out_message() -> None:
     assert parsed.property_name == "Tokyo Stay"
     assert parsed.is_sold_out is True
     assert parsed.availability_source == "html_visible_text_sold_out"
+
+
+def test_parse_lodging_map_extracts_airbnb_vacation_rental_metadata() -> None:
+    html = """
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "VacationRental",
+            "name": "Shinjuku Loft",
+            "address": {
+              "@type": "PostalAddress",
+              "streetAddress": "1-2-3 Kabukicho",
+              "addressLocality": "Shinjuku City",
+              "addressRegion": "Tokyo",
+              "postalCode": "160-0021",
+              "addressCountry": "JP"
+            },
+            "numberOfBedrooms": 1,
+            "numberOfBathroomsTotal": 1,
+            "amenityFeature": [
+              {
+                "name": "Kitchen",
+                "value": true
+              },
+              {
+                "name": "Washer",
+                "value": true
+              }
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "24000",
+              "priceCurrency": "JPY"
+            },
+            "geo": {
+              "@type": "GeoCoordinates",
+              "latitude": 35.69384,
+              "longitude": 139.70355
+            }
+          }
+        </script>
+      </head>
+    </html>
+    """
+
+    parsed = parse_lodging_map(html)
+
+    assert parsed is not None
+    assert parsed.property_name == "Shinjuku Loft"
+    assert parsed.formatted_address == (
+        "1-2-3 Kabukicho, Shinjuku City, Tokyo, 160-0021, JP"
+    )
+    assert parsed.latitude == 35.69384
+    assert parsed.longitude == 139.70355
+    assert parsed.property_type == "vacationrental"
+    assert parsed.bedroom_count == 1
+    assert parsed.bathroom_count == 1
+    assert parsed.amenities == ("Kitchen", "Washer")
+    assert parsed.price_amount == 24000
+    assert parsed.price_currency == "JPY"
+    assert parsed.map_source == "structured_data_geo"
