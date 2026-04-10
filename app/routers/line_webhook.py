@@ -10,13 +10,13 @@ from app.controllers.line_webhook_controller import process_events
 from app.controllers.repositories.captured_link_repository import (
     CapturedLinkRepository,
 )
-from app.lodging_links import LodgingLinkService
-from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
-from app.notion_sync import NotionLodgingSyncService, NotionSyncRepository
 from app.controllers.validators.line_webhook import (
     ensure_line_webhook_request_is_valid,
     parse_line_webhook_payload,
 )
+from app.lodging_links import LodgingLinkService
+from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
+from app.notion_sync import NotionTargetManager, NotionSyncRepository
 from app.schemas.line_webhook import LineWebhookResponse
 
 router = APIRouter()
@@ -47,11 +47,8 @@ def _get_notion_sync_repository(request: Request) -> NotionSyncRepository | None
     return cast(NotionSyncRepository | None, request.app.state.notion_sync_repository)
 
 
-def _get_notion_sync_service(request: Request) -> NotionLodgingSyncService | None:
-    return cast(
-        NotionLodgingSyncService | None,
-        request.app.state.notion_sync_service,
-    )
+def _get_notion_target_manager(request: Request) -> NotionTargetManager:
+    return cast(NotionTargetManager, request.app.state.notion_target_manager)
 
 
 def _get_map_enrichment_repository(
@@ -93,7 +90,7 @@ async def line_webhook(
         line_client=_get_line_client(request),
         lodging_link_service=_get_lodging_link_service(request),
         notion_sync_repository=_get_notion_sync_repository(request),
-        notion_sync_service=_get_notion_sync_service(request),
+        notion_target_manager=_get_notion_target_manager(request),
         map_enrichment_repository=_get_map_enrichment_repository(request),
         map_enrichment_service=_get_map_enrichment_service(request),
     )

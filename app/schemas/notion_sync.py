@@ -5,22 +5,50 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-class NotionSetupRequest(BaseModel):
+class NotionSourceScopeFields(BaseModel):
+    source_type: str | None = Field(
+        default=None,
+        description="LINE source 類型，可為 group、room、user。",
+    )
+    group_id: str | None = Field(
+        default=None,
+        description="當 source_type=group 時的 LINE group id。",
+    )
+    room_id: str | None = Field(
+        default=None,
+        description="當 source_type=room 時的 LINE room id。",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="當 source_type=user 時的 LINE user id。",
+    )
+
+
+class NotionSetupRequest(NotionSourceScopeFields):
     title: str | None = Field(
         default=None,
         description="要建立在 Notion 中的資料庫名稱。",
     )
+    parent_page_id: str | None = Field(
+        default=None,
+        description="若要建立 scoped database，可指定新的 Notion parent page id。",
+    )
+    data_source_id: str | None = Field(
+        default=None,
+        description="若要綁定 scoped target，可指定既有 Notion data source id。",
+    )
 
 
-class NotionSetupResponse(BaseModel):
+class NotionSetupResponse(NotionSourceScopeFields):
     database_id: str
     data_source_id: str
     database_title: str | None = None
     database_url: str | None = None
     database_public_url: str | None = None
+    target_source: str | None = None
 
 
-class NotionSyncRunRequest(BaseModel):
+class NotionSyncRunRequest(NotionSourceScopeFields):
     limit: int | None = Field(
         default=None,
         ge=1,
@@ -33,7 +61,7 @@ class NotionSyncRunRequest(BaseModel):
     )
 
 
-class NotionSyncRunResponse(BaseModel):
+class NotionSyncRunResponse(NotionSourceScopeFields):
     processed: int
     created: int
     updated: int
@@ -41,6 +69,7 @@ class NotionSyncRunResponse(BaseModel):
     limit_used: int
     database_id: str | None = None
     data_source_id: str | None = None
+    target_source: str | None = None
 
 
 class NotionSyncRetryResponse(BaseModel):
@@ -53,7 +82,7 @@ class NotionSyncRetryResponse(BaseModel):
     notion_page_url: str | None = None
 
 
-class NotionSyncDocumentResponse(BaseModel):
+class NotionSyncDocumentResponse(NotionSourceScopeFields):
     document_id: str
     platform: str
     url: str

@@ -17,8 +17,11 @@ from app.map_enrichment import (
 )
 from app.notion_sync import (
     HttpNotionClient,
+    MongoNotionTargetRepository,
     MongoNotionSyncRepository,
     NotionLodgingSyncService,
+    NotionTargetManager,
+    NotionTargetRepository,
     NotionSyncRepository,
 )
 from app.routers import (
@@ -38,6 +41,7 @@ def create_app(
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
     notion_sync_repository: NotionSyncRepository | None = None,
     notion_sync_service: NotionLodgingSyncService | None = None,
+    notion_target_repository: NotionTargetRepository | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.from_env()
     owned_resource = None
@@ -77,6 +81,17 @@ def create_app(
         )
     else:
         active_notion_sync_repository = None
+    if notion_target_repository is not None:
+        active_notion_target_repository = notion_target_repository
+    elif hasattr(active_collector, "collection") and hasattr(
+        active_collector.collection,
+        "database",
+    ):
+        active_notion_target_repository = MongoNotionTargetRepository(
+            active_collector.collection.database[active_settings.notion_target_collection]
+        )
+    else:
+        active_notion_target_repository = None
     active_notion_sync_service = notion_sync_service or (
         NotionLodgingSyncService(
             HttpNotionClient(
@@ -93,6 +108,10 @@ def create_app(
         )
         if active_settings.notion_api_token
         else None
+    )
+    active_notion_target_manager = NotionTargetManager(
+        active_notion_sync_service,
+        active_notion_target_repository,
     )
 
     @asynccontextmanager
@@ -117,6 +136,8 @@ def create_app(
     app.state.map_enrichment_service = active_map_enrichment_service
     app.state.notion_sync_repository = active_notion_sync_repository
     app.state.notion_sync_service = active_notion_sync_service
+    app.state.notion_target_repository = active_notion_target_repository
+    app.state.notion_target_manager = active_notion_target_manager
 
     app.include_router(health_router)
     app.include_router(line_webhook_router)

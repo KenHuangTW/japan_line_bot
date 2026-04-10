@@ -243,6 +243,7 @@ curl http://127.0.0.1:8000/healthz
 | `NOTION_DATABASE_TITLE` | `Nihon LINE Bot Lodgings` | setup 時預設資料庫名稱。 |
 | `NOTION_DATABASE_URL` | 空字串 | 資料庫 URL 快取，可選填。 |
 | `NOTION_PUBLIC_DATABASE_URL` | 空字串 | 公開分享 URL 快取，可選填，`/清單` 會優先回傳它。 |
+| `NOTION_TARGET_COLLECTION` | `notion_targets` | 儲存聊天室對 Notion target 映射的 Mongo collection。 |
 | `NOTION_API_VERSION` | `2026-03-11` | Notion API version header。 |
 | `NOTION_REQUEST_TIMEOUT` | `10.0` | Notion HTTP request timeout。 |
 | `NOTION_SYNC_BATCH_SIZE` | `20` | API / job 預設一次同步幾筆。 |
@@ -288,7 +289,7 @@ curl http://127.0.0.1:8000/healthz
 | --- | --- |
 | `/help` | 顯示目前支援的指令與說明。 |
 | `/ping` | 回覆 `pong`。 |
-| `/清單` | 回傳目前 Notion 住宿清單連結。若有 `NOTION_PUBLIC_DATABASE_URL` 會優先使用。 |
+| `/清單` | 回傳目前聊天室對應的 Notion 住宿清單連結；若該聊天室沒有專屬 target，會回退到全域預設 Notion。 |
 | `/整理` | 只針對目前聊天室範圍，先跑 lodging enrichment，再同步 pending / failed / 有更新的資料到 Notion。 |
 | `/全部重來` | 只針對目前聊天室範圍，忽略既有同步狀態，先重跑 enrichment，再強制同步所有資料到 Notion。 |
 
@@ -381,16 +382,18 @@ Swagger tag 為 `notion-sync`。
 
 前置條件：
 
-- `POST /jobs/notion-sync/setup` 需要 `NOTION_API_TOKEN`，以及以下兩者擇一：
+- `POST /jobs/notion-sync/setup` 一律需要 `NOTION_API_TOKEN`
+- 若是設定全域 default target，還需要以下兩者擇一：
   - `NOTION_PARENT_PAGE_ID`，用來建立新的 database
   - `NOTION_DATA_SOURCE_ID`，用來直接校正既有 data source schema
-- `POST /jobs/notion-sync/run` 需要 `NOTION_API_TOKEN` 與可用的 `NOTION_DATA_SOURCE_ID`
+- 若是設定特定聊天室 target，可在 request body 直接提供 `parent_page_id` 或 `data_source_id`
+- `POST /jobs/notion-sync/run` 需要 `NOTION_API_TOKEN` 與可用的 default/scoped target
 
 | Method | Path | 說明 |
 | --- | --- | --- |
-| `POST` | `/jobs/notion-sync/setup` | 建立或校正 Notion database / data source schema。 |
-| `POST` | `/jobs/notion-sync/run` | 同步 pending / failed / 有更新的文件到 Notion。 |
-| `GET` | `/jobs/notion-sync/documents` | 列出 Notion sync 狀態。 |
+| `POST` | `/jobs/notion-sync/setup` | 建立或校正全域或聊天室專屬的 Notion database / data source schema。 |
+| `POST` | `/jobs/notion-sync/run` | 同步 pending / failed / 有更新的文件到 Notion，可指定聊天室範圍。 |
+| `GET` | `/jobs/notion-sync/documents` | 列出 Notion sync 狀態，可用聊天室 scope 過濾。 |
 | `POST` | `/jobs/notion-sync/documents/{document_id}/retry` | 單筆文件重跑同步。 |
 
 `POST /jobs/notion-sync/setup` request body 可選填：
@@ -401,14 +404,37 @@ Swagger tag 為 `notion-sync`。
 }
 ```
 
+若要設定某個聊天室專屬 target，可以改成：
+
+```json
+{
+  "title": "Group Trip Lodgings",
+  "source_type": "group",
+  "group_id": "Cgroup123",
+  "parent_page_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+}
+```
+
+或綁定既有 data source：
+
+```json
+{
+  "source_type": "room",
+  "room_id": "Rroom123",
+  "data_source_id": "ffffffff-1111-2222-3333-444444444444"
+}
+```
+
 setup 成功後會回傳：
 
 - `database_id`
 - `data_source_id`
 - `database_url`
 - `database_public_url`
+- `target_source`
+- `source_type` / `group_id` / `room_id` / `user_id`
 
-建議把 `database_id`、`data_source_id` 視需要回填到 `.env`。
+如果回傳的是全域 default target，建議把 `database_id`、`data_source_id` 視需要回填到 `.env`。聊天室專屬 target 會存進 `NOTION_TARGET_COLLECTION`，不需要再寫回 `.env`。
 
 `POST /jobs/notion-sync/run` request body：
 
@@ -419,10 +445,27 @@ setup 成功後會回傳：
 }
 ```
 
+若要只跑某個聊天室，可以加上 source scope：
+
+```json
+{
+  "limit": 20,
+  "force": true,
+  "source_type": "group",
+  "group_id": "Cgroup123"
+}
+```
+
 `force` 行為：
 
 - `false`：只同步 pending、failed、或在上次同步後又被 capture / enrichment 更新的文件。
 - `true`：忽略同步狀態，重跑所有文件；若 `data_source_id` 已存在，也會先校正 schema。
+
+`GET /jobs/notion-sync/documents` 除了 `limit` 與 `status`，也可帶：
+
+- `source_type=group&group_id=...`
+- `source_type=room&room_id=...`
+- `source_type=user&user_id=...`
 
 ### Notion data source 欄位
 
@@ -459,6 +502,8 @@ python -m app.map_enrichment_job
 ```bash
 python -m app.notion_sync_job
 ```
+
+這個 job 會依每筆文件的 source scope 決定使用聊天室專屬 target 或全域 default target；因此即使沒有設定 `NOTION_DATA_SOURCE_ID`，只要對應聊天室已經有 scoped target，也能正常同步。
 
 用途：
 
@@ -669,5 +714,6 @@ python -m app.notion_sync_job
 
 - `start.sh` / `start.ps1` 會要求 `.env` 存在，否則不會啟動。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，系統仍可驗證 webhook 並寫入 MongoDB，但所有 reply message 都會失效。
-- `NOTION_PUBLIC_DATABASE_URL` 是 `/清單` 最直接的回覆來源；如果沒填，系統會嘗試從 Notion service 讀取資料庫 URL。
-- 若你在 Notion 建好 data source 後想長期固定使用同一份資料，建議把 setup 回傳的 id 回填到 `.env`。
+- `NOTION_PUBLIC_DATABASE_URL` 只作為全域 default `/清單` fallback；若聊天室有專屬 target，系統會優先回傳該聊天室 target 的公開連結。
+- 若你在 Notion 建好 data source 後想長期固定使用同一份全域資料，建議把 setup 回傳的 id 回填到 `.env`。
+- 若你要把某個聊天室切到新的 Notion，先呼叫 scoped `POST /jobs/notion-sync/setup`，再對該聊天室執行 `/全部重來` 或 `POST /jobs/notion-sync/run` 搭配 `force=true`。
