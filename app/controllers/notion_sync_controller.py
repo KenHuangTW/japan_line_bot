@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Sequence
 
 from app.notion_sync import (
-    NotionLodgingSyncService,
+    NotionTargetManager,
     NotionSyncRepository,
     run_notion_sync_job,
+    sync_notion_document,
+    source_scope_to_fields,
 )
+from app.notion_sync.models import NotionSyncSourceScope
 from app.schemas.notion_sync import (
     NotionSetupResponse,
     NotionSyncDocumentResponse,
@@ -17,35 +20,62 @@ from app.schemas.notion_sync import (
 
 
 async def setup_notion_database(
-    service: NotionLodgingSyncService,
+    manager: NotionTargetManager,
     *,
     title: str | None = None,
+    source_scope: NotionSyncSourceScope | None = None,
+    parent_page_id: str | None = None,
+    data_source_id: str | None = None,
 ) -> NotionSetupResponse:
-    target = await service.setup_database(title=title)
+    resolved_service = await manager.setup_database(
+        title=title,
+        source_scope=source_scope,
+        parent_page_id=parent_page_id,
+        data_source_id=data_source_id,
+    )
+    if resolved_service is None:
+        raise RuntimeError("Notion setup is not configured.")
+
+    target = resolved_service.target
     return NotionSetupResponse(
         database_id=target.database_id,
         data_source_id=target.data_source_id,
-        database_title=target.title,
-        database_url=target.url,
-        database_public_url=target.public_url,
+        database_title=target.database_title,
+        database_url=target.database_url,
+        database_public_url=target.public_database_url,
+        target_source=resolved_service.target_source,
+        **source_scope_to_fields(source_scope),
     )
 
 
 async def trigger_notion_sync_run(
     repository: NotionSyncRepository,
-    service: NotionLodgingSyncService,
+    manager: NotionTargetManager,
     *,
     limit: int,
     force: bool = False,
+    source_scope: NotionSyncSourceScope | None = None,
 ) -> NotionSyncRunResponse:
-    if force and service.data_source_id:
-        await service.setup_database()
+    resolved_service = manager.resolve_service(source_scope)
+    if resolved_service is None or not resolved_service.service.is_sync_configured:
+        raise RuntimeError("Notion sync is not configured.")
+
+    if force:
+        resolved_service = await manager.setup_database(
+            source_scope=(
+                source_scope if resolved_service.target_source == "scoped" else None
+            )
+        )
+        if resolved_service is None or not resolved_service.service.is_sync_configured:
+            raise RuntimeError("Notion sync is not configured.")
 
     summary = await run_notion_sync_job(
         repository=repository,
-        service=service,
+        service=resolved_service.service,
         limit=limit,
         force=force,
+        source_scope=source_scope,
+        target_manager=manager,
     )
     return NotionSyncRunResponse(
         processed=summary.processed,
@@ -53,14 +83,16 @@ async def trigger_notion_sync_run(
         updated=summary.updated,
         failed=summary.failed,
         limit_used=limit,
-        database_id=service.database_id or None,
-        data_source_id=service.data_source_id or None,
+        database_id=resolved_service.service.database_id or None,
+        data_source_id=resolved_service.service.data_source_id or None,
+        target_source=resolved_service.target_source,
+        **source_scope_to_fields(source_scope),
     )
 
 
 async def retry_notion_sync_document(
     repository: NotionSyncRepository,
-    service: NotionLodgingSyncService,
+    manager: NotionTargetManager,
     *,
     document_id: str,
 ) -> NotionSyncRetryResponse | None:
@@ -69,7 +101,12 @@ async def retry_notion_sync_document(
         return None
 
     try:
-        result = await service.sync_document(candidate)
+        result = await sync_notion_document(
+            repository=repository,
+            service=manager.default_service,
+            document_id=document_id,
+            target_manager=manager,
+        )
     except Exception as error:
         repository.mark_failed(candidate.document_id, str(error))
         return NotionSyncRetryResponse(
@@ -80,13 +117,8 @@ async def retry_notion_sync_document(
             failed=1,
         )
 
-    repository.mark_synced(
-        candidate.document_id,
-        page_id=result.page_id,
-        page_url=result.page_url,
-        database_id=service.database_id or None,
-        data_source_id=service.data_source_id or None,
-    )
+    if result is None:
+        return None
     return NotionSyncRetryResponse(
         document_id=document_id,
         processed=1,
@@ -103,6 +135,7 @@ def build_notion_sync_documents_response(
     *,
     limit: int,
     statuses: Sequence[str] | None = None,
+    source_scope: NotionSyncSourceScope | None = None,
 ) -> NotionSyncDocumentsResponse:
     normalized_statuses = [status for status in (statuses or []) if status]
     documents = [
@@ -133,8 +166,16 @@ def build_notion_sync_documents_response(
             notion_last_attempt_at=item.notion_last_attempt_at,
             notion_last_synced_at=item.notion_last_synced_at,
             captured_at=item.captured_at,
+            source_type=item.source_type,
+            group_id=item.group_id,
+            room_id=item.room_id,
+            user_id=item.user_id,
         )
-        for item in repository.list_documents(limit=limit, statuses=normalized_statuses)
+        for item in repository.list_documents(
+            limit=limit,
+            statuses=normalized_statuses,
+            source_scope=source_scope,
+        )
     ]
     return NotionSyncDocumentsResponse(
         documents=documents,

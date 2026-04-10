@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Sequence
 
 from app.notion_sync.job import run_notion_sync_job
@@ -83,6 +84,36 @@ class FakeNotionSyncService:
         if document_id in self.failing_document_ids:
             raise RuntimeError("simulated notion sync failure")
         return self.results[document_id]
+
+
+class RoutingFakeNotionSyncService:
+    def __init__(self, *, database_id: str, data_source_id: str) -> None:
+        self.database_id = database_id
+        self.data_source_id = data_source_id
+        self.calls: list[str] = []
+
+    async def sync_document(self, candidate: NotionSyncCandidate) -> NotionPageResult:
+        document_id = str(candidate.document_id)
+        self.calls.append(document_id)
+        return NotionPageResult(
+            page_id=f"{self.data_source_id}-{document_id}",
+            page_url=f"https://www.notion.so/{self.data_source_id}-{document_id}",
+            created=True,
+        )
+
+
+class FakeTargetManager:
+    def __init__(self, services_by_scope: dict[tuple[str, str], RoutingFakeNotionSyncService]) -> None:
+        self.services_by_scope = services_by_scope
+
+    def resolve_service_for_candidate(self, candidate: NotionSyncCandidate):
+        if candidate.source_type == "group":
+            service = self.services_by_scope[("group", str(candidate.group_id))]
+        elif candidate.source_type == "room":
+            service = self.services_by_scope[("room", str(candidate.room_id))]
+        else:
+            service = self.services_by_scope[("user", str(candidate.user_id))]
+        return SimpleNamespace(service=service)
 
 
 def _filter_candidates(
@@ -285,3 +316,68 @@ def test_run_notion_sync_job_can_filter_by_line_source_scope() -> None:
         NotionSyncSourceScope(source_type="group", group_id="group-a")
     ]
     assert service.calls == ["doc-group-a"]
+
+
+def test_run_notion_sync_job_routes_documents_by_resolved_target() -> None:
+    repository = InMemoryNotionSyncRepository(
+        [
+            NotionSyncCandidate(
+                document_id="doc-group-a",
+                platform="booking",
+                url="https://www.booking.com/hotel/jp/a.html",
+                source_type="group",
+                group_id="group-a",
+                captured_at=datetime(2026, 3, 25, tzinfo=timezone.utc),
+            ),
+            NotionSyncCandidate(
+                document_id="doc-room-a",
+                platform="agoda",
+                url="https://www.agoda.com/zh-tw/foo/hotel/c.html",
+                source_type="room",
+                room_id="room-a",
+                captured_at=datetime(2026, 3, 26, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    group_service = RoutingFakeNotionSyncService(
+        database_id="db-group-a",
+        data_source_id="ds-group-a",
+    )
+    room_service = RoutingFakeNotionSyncService(
+        database_id="db-room-a",
+        data_source_id="ds-room-a",
+    )
+    target_manager = FakeTargetManager(
+        {
+            ("group", "group-a"): group_service,
+            ("room", "room-a"): room_service,
+        }
+    )
+
+    summary = asyncio.run(
+        run_notion_sync_job(
+            repository=repository,
+            service=None,
+            limit=None,
+            target_manager=target_manager,
+        )
+    )
+
+    assert summary.processed == 2
+    assert summary.created == 2
+    assert summary.updated == 0
+    assert summary.failed == 0
+    assert group_service.calls == ["doc-group-a"]
+    assert room_service.calls == ["doc-room-a"]
+    assert repository.synced["doc-group-a"] == (
+        "ds-group-a-doc-group-a",
+        "https://www.notion.so/ds-group-a-doc-group-a",
+        "db-group-a",
+        "ds-group-a",
+    )
+    assert repository.synced["doc-room-a"] == (
+        "ds-room-a-doc-room-a",
+        "https://www.notion.so/ds-room-a-doc-room-a",
+        "db-room-a",
+        "ds-room-a",
+    )

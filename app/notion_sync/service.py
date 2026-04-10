@@ -303,6 +303,37 @@ class NotionLodgingSyncService:
         self.database_url = database_url.strip()
         self.public_database_url = public_database_url.strip()
 
+    def clone(self) -> "NotionLodgingSyncService":
+        return NotionLodgingSyncService(
+            self.client,
+            parent_page_id=self.parent_page_id,
+            database_id=self.database_id,
+            data_source_id=self.data_source_id,
+            database_title=self.database_title,
+            database_url=self.database_url,
+            public_database_url=self.public_database_url,
+        )
+
+    def clone_with_target(
+        self,
+        *,
+        parent_page_id: str = "",
+        database_id: str = "",
+        data_source_id: str = "",
+        database_title: str = DEFAULT_NOTION_DATABASE_TITLE,
+        database_url: str = "",
+        public_database_url: str = "",
+    ) -> "NotionLodgingSyncService":
+        return NotionLodgingSyncService(
+            self.client,
+            parent_page_id=parent_page_id,
+            database_id=database_id,
+            data_source_id=data_source_id,
+            database_title=database_title,
+            database_url=database_url,
+            public_database_url=public_database_url,
+        )
+
     @property
     def is_setup_configured(self) -> bool:
         return bool(self.parent_page_id or self.data_source_id)

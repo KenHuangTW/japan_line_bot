@@ -4,9 +4,7 @@ import logging
 
 from app.config import Settings
 from app.controllers.integration.line_client import LineClient
-from app.controllers.repositories.captured_link_repository import (
-    CapturedLinkRepository,
-)
+from app.controllers.repositories.captured_link_repository import CapturedLinkRepository
 from app.link_extractor import extract_lodging_links
 from app.lodging_links import LodgingLinkService
 from app.lodging_links.common import build_lodging_lookup_keys
@@ -18,10 +16,11 @@ from app.map_enrichment import (
 )
 from app.models import CapturedLodgingLink, LodgingLinkMatch
 from app.notion_sync import (
-    NotionLodgingSyncService,
     NotionSyncRepository,
-    NotionSyncSummary,
     NotionSyncSourceScope,
+    NotionSyncSummary,
+    NotionTargetManager,
+    build_source_scope,
     run_notion_sync_job,
 )
 from app.schemas.line_webhook import LineEventSource, LineWebhookRequest
@@ -67,7 +66,7 @@ async def _handle_line_command(
     settings: Settings,
     line_client: LineClient,
     notion_sync_repository: NotionSyncRepository | None,
-    notion_sync_service: NotionLodgingSyncService | None,
+    notion_target_manager: NotionTargetManager,
     map_enrichment_repository: MapEnrichmentRepository | None,
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> bool:
@@ -97,7 +96,8 @@ async def _handle_line_command(
             reply_token=reply_token,
             text=await _run_notion_list_command(
                 settings=settings,
-                service=notion_sync_service,
+                target_manager=notion_target_manager,
+                source_scope=_build_source_scope(source),
             ),
         )
         return True
@@ -109,7 +109,7 @@ async def _handle_line_command(
             reply_token=reply_token,
             text=await _run_notion_sync_command(
                 repository=notion_sync_repository,
-                service=notion_sync_service,
+                target_manager=notion_target_manager,
                 force=False,
                 source_scope=_build_source_scope(source),
                 map_enrichment_repository=map_enrichment_repository,
@@ -125,7 +125,7 @@ async def _handle_line_command(
             reply_token=reply_token,
             text=await _run_notion_sync_command(
                 repository=notion_sync_repository,
-                service=notion_sync_service,
+                target_manager=notion_target_manager,
                 force=True,
                 source_scope=_build_source_scope(source),
                 map_enrichment_repository=map_enrichment_repository,
@@ -182,7 +182,7 @@ def _select_duplicate_reply_url(
 async def _run_notion_sync_command(
     *,
     repository: NotionSyncRepository | None,
-    service: NotionLodgingSyncService | None,
+    target_manager: NotionTargetManager,
     force: bool,
     source_scope: NotionSyncSourceScope | None,
     map_enrichment_repository: MapEnrichmentRepository | None,
@@ -191,12 +191,26 @@ async def _run_notion_sync_command(
     if source_scope is None:
         return "無法辨識目前聊天室，暫時無法執行 Notion sync。"
 
-    if repository is None or service is None or not service.is_sync_configured:
+    resolved_service = target_manager.resolve_service(source_scope)
+    if (
+        repository is None
+        or resolved_service is None
+        or not resolved_service.service.is_sync_configured
+    ):
         return "Notion sync 尚未設定完成。"
 
     try:
         if force:
-            await service.setup_database()
+            resolved_service = await target_manager.setup_database(
+                source_scope=(
+                    source_scope if resolved_service.target_source == "scoped" else None
+                )
+            )
+            if (
+                resolved_service is None
+                or not resolved_service.service.is_sync_configured
+            ):
+                return "Notion sync 尚未設定完成。"
         await _run_lodging_enrichment_before_notion_sync(
             repository=map_enrichment_repository,
             service=map_enrichment_service,
@@ -205,10 +219,11 @@ async def _run_notion_sync_command(
         )
         summary = await run_notion_sync_job(
             repository=repository,
-            service=service,
+            service=resolved_service.service,
             limit=None,
             force=force,
             source_scope=source_scope,
+            target_manager=target_manager,
         )
     except Exception:
         logger.exception("Failed to run Notion sync command from LINE.")
@@ -249,7 +264,7 @@ async def _run_automatic_notion_sync_after_capture(
     *,
     source: LineEventSource,
     notion_sync_repository: NotionSyncRepository | None,
-    notion_sync_service: NotionLodgingSyncService | None,
+    notion_target_manager: NotionTargetManager,
     map_enrichment_repository: MapEnrichmentRepository | None,
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> None:
@@ -257,10 +272,11 @@ async def _run_automatic_notion_sync_after_capture(
     if source_scope is None:
         return
 
-    if notion_sync_repository is None or notion_sync_service is None:
+    resolved_service = notion_target_manager.resolve_service(source_scope)
+    if notion_sync_repository is None or resolved_service is None:
         return
 
-    if not notion_sync_service.is_sync_configured:
+    if not resolved_service.service.is_sync_configured:
         return
 
     try:
@@ -272,10 +288,11 @@ async def _run_automatic_notion_sync_after_capture(
         )
         await run_notion_sync_job(
             repository=notion_sync_repository,
-            service=notion_sync_service,
+            service=resolved_service.service,
             limit=None,
             force=False,
             source_scope=source_scope,
+            target_manager=notion_target_manager,
         )
     except Exception:
         logger.exception("Failed to run automatic Notion sync after capture.")
@@ -284,30 +301,43 @@ async def _run_automatic_notion_sync_after_capture(
 async def _run_notion_list_command(
     *,
     settings: Settings,
-    service: NotionLodgingSyncService | None,
+    target_manager: NotionTargetManager,
+    source_scope: NotionSyncSourceScope | None,
 ) -> str:
-    notion_url = settings.notion_public_database_url.strip()
-    if notion_url:
-        return notion_url
+    resolved_service = target_manager.resolve_service(source_scope)
+    notion_url: str | None = None
+    if resolved_service is not None:
+        if (
+            resolved_service.target_source == "scoped"
+            and resolved_service.target.share_url
+        ):
+            return str(resolved_service.target.share_url)
+        if resolved_service.target_source == "default":
+            notion_url = settings.notion_public_database_url.strip() or None
+            if notion_url:
+                return notion_url
 
-    if service is not None:
+        service = resolved_service.service
         try:
             notion_url = await service.get_database_url(prefer_public=True)
         except Exception:
             logger.exception("Failed to resolve Notion database URL from LINE.")
             notion_url = service.public_database_url or service.database_url or None
 
-        if service.public_database_url:
+        if resolved_service.target_source == "default" and service.public_database_url:
             settings.notion_public_database_url = service.public_database_url
-        if service.database_url:
+        if resolved_service.target_source == "default" and service.database_url:
             settings.notion_database_url = service.database_url
 
     if not notion_url:
-        notion_url = settings.notion_database_url.strip()
+        notion_url = settings.notion_public_database_url.strip() or None
+    if not notion_url:
+        notion_url = settings.notion_database_url.strip() or None
 
     if not notion_url:
         return "Notion 清單連結尚未設定完成。"
     return notion_url
+
 
 def _format_help_message() -> str:
     command_lines = [
@@ -333,23 +363,15 @@ def _format_notion_sync_summary(
 
 
 def _build_source_scope(source: LineEventSource) -> NotionSyncSourceScope | None:
-    source_type = (source.type or "").strip().lower()
-    if source_type == "group" and source.groupId:
-        return NotionSyncSourceScope(
-            source_type="group",
+    try:
+        return build_source_scope(
+            source_type=source.type,
             group_id=source.groupId,
-        )
-    if source_type == "room" and source.roomId:
-        return NotionSyncSourceScope(
-            source_type="room",
             room_id=source.roomId,
-        )
-    if source_type == "user" and source.userId:
-        return NotionSyncSourceScope(
-            source_type="user",
             user_id=source.userId,
         )
-    return None
+    except ValueError:
+        return None
 
 
 async def process_events(
@@ -359,21 +381,18 @@ async def process_events(
     line_client: LineClient,
     lodging_link_service: LodgingLinkService,
     notion_sync_repository: NotionSyncRepository | None = None,
-    notion_sync_service: NotionLodgingSyncService | None = None,
+    notion_target_manager: NotionTargetManager | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
 ) -> int:
+    active_notion_target_manager = notion_target_manager or NotionTargetManager(None)
     captured_total = 0
 
     for event in payload.events:
         event_type = event.type
         reply_token = event.replyToken
 
-        if (
-            event_type == "join"
-            and reply_token
-            and settings.line_channel_access_token
-        ):
+        if event_type == "join" and reply_token and settings.line_channel_access_token:
             await _safe_reply(
                 line_client,
                 reply_token,
@@ -392,7 +411,7 @@ async def process_events(
             settings=settings,
             line_client=line_client,
             notion_sync_repository=notion_sync_repository,
-            notion_sync_service=notion_sync_service,
+            notion_target_manager=active_notion_target_manager,
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
         ):
@@ -413,10 +432,14 @@ async def process_events(
         for link in link_matches:
             lookup_urls = _build_duplicate_lookup_urls(link)
             if any(url in pending_lookup_urls for url in lookup_urls):
-                reply_url = link.url if _uses_short_link(
-                    url=link.url,
-                    resolved_url=link.resolved_url,
-                ) else link.resolved_url or link.url
+                reply_url = (
+                    link.url
+                    if _uses_short_link(
+                        url=link.url,
+                        resolved_url=link.resolved_url,
+                    )
+                    else link.resolved_url or link.url
+                )
                 if reply_url not in seen_duplicate_reply_urls:
                     duplicate_reply_urls.append(reply_url)
                     seen_duplicate_reply_urls.add(reply_url)
@@ -466,7 +489,7 @@ async def process_events(
             await _run_automatic_notion_sync_after_capture(
                 source=event.source,
                 notion_sync_repository=notion_sync_repository,
-                notion_sync_service=notion_sync_service,
+                notion_target_manager=active_notion_target_manager,
                 map_enrichment_repository=map_enrichment_repository,
                 map_enrichment_service=map_enrichment_service,
             )

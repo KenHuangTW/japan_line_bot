@@ -10,6 +10,7 @@ from app.notion_sync.models import (
     NotionSyncSourceScope,
     NotionSyncSummary,
 )
+from app.notion_sync.targets import NotionTargetManager, source_scope_from_candidate
 
 
 class MongoCollection(Protocol):
@@ -46,6 +47,7 @@ class NotionSyncRepository(Protocol):
         self,
         limit: int,
         statuses: Sequence[str] | None = None,
+        source_scope: NotionSyncSourceScope | None = None,
     ) -> Sequence[NotionSyncDocument]: ...
 
     def mark_synced(
@@ -139,8 +141,9 @@ class MongoNotionSyncRepository:
         self,
         limit: int,
         statuses: Sequence[str] | None = None,
+        source_scope: NotionSyncSourceScope | None = None,
     ) -> Sequence[NotionSyncDocument]:
-        query: dict[str, Any] = {}
+        status_query: dict[str, Any] = {}
         normalized_statuses = [status for status in (statuses or []) if status]
         if normalized_statuses:
             clauses: list[dict[str, Any]] = []
@@ -159,10 +162,11 @@ class MongoNotionSyncRepository:
                 clauses.append({"notion_sync_status": {"$in": other_statuses}})
 
             if len(clauses) == 1:
-                query = clauses[0]
+                status_query = clauses[0]
             elif clauses:
-                query = {"$or": clauses}
+                status_query = {"$or": clauses}
 
+        query = _apply_source_scope_query(status_query, source_scope)
         cursor = self.collection.find(query).sort("captured_at", -1).limit(limit)
         documents: list[NotionSyncDocument] = []
         for item in cursor:
@@ -347,11 +351,12 @@ def _apply_source_scope_query(
 
 async def run_notion_sync_job(
     repository: NotionSyncRepository,
-    service: NotionSyncService,
+    service: NotionSyncService | None,
     limit: int | None,
     *,
     force: bool = False,
     source_scope: NotionSyncSourceScope | None = None,
+    target_manager: NotionTargetManager | None = None,
 ) -> NotionSyncSummary:
     candidates = (
         repository.find_all(limit, source_scope)
@@ -362,25 +367,36 @@ async def run_notion_sync_job(
         candidates=candidates,
         repository=repository,
         service=service,
+        target_manager=target_manager,
     )
 
 
 async def sync_notion_document(
     repository: NotionSyncRepository,
-    service: NotionSyncService,
+    service: NotionSyncService | None,
     document_id: str,
+    *,
+    target_manager: NotionTargetManager | None = None,
 ) -> NotionPageResult | None:
     candidate = repository.find_by_document_id(document_id)
     if candidate is None:
         return None
 
-    result = await service.sync_document(candidate)
+    active_service = _resolve_candidate_service(
+        candidate=candidate,
+        service=service,
+        target_manager=target_manager,
+    )
+    if active_service is None:
+        raise RuntimeError("Notion sync is not configured for this source scope.")
+
+    result = await active_service.sync_document(candidate)
     repository.mark_synced(
         candidate.document_id,
         page_id=result.page_id,
         page_url=result.page_url,
-        database_id=_get_service_database_id(service),
-        data_source_id=_get_service_data_source_id(service),
+        database_id=_get_service_database_id(active_service),
+        data_source_id=_get_service_data_source_id(active_service),
     )
     return result
 
@@ -389,12 +405,31 @@ async def _run_notion_sync_candidates(
     *,
     candidates: Sequence[NotionSyncCandidate],
     repository: NotionSyncRepository,
-    service: NotionSyncService,
+    service: NotionSyncService | None,
+    target_manager: NotionTargetManager | None = None,
 ) -> NotionSyncSummary:
     summary = NotionSyncSummary()
     for candidate in candidates:
+        active_service = _resolve_candidate_service(
+            candidate=candidate,
+            service=service,
+            target_manager=target_manager,
+        )
+        if active_service is None:
+            repository.mark_failed(
+                candidate.document_id,
+                "Notion sync is not configured for this source scope.",
+            )
+            summary = NotionSyncSummary(
+                processed=summary.processed + 1,
+                created=summary.created,
+                updated=summary.updated,
+                failed=summary.failed + 1,
+            )
+            continue
+
         try:
-            result = await service.sync_document(candidate)
+            result = await active_service.sync_document(candidate)
         except Exception as error:
             repository.mark_failed(candidate.document_id, str(error))
             summary = NotionSyncSummary(
@@ -409,8 +444,8 @@ async def _run_notion_sync_candidates(
             candidate.document_id,
             page_id=result.page_id,
             page_url=result.page_url,
-            database_id=_get_service_database_id(service),
-            data_source_id=_get_service_data_source_id(service),
+            database_id=_get_service_database_id(active_service),
+            data_source_id=_get_service_data_source_id(active_service),
         )
         summary = NotionSyncSummary(
             processed=summary.processed + 1,
@@ -420,6 +455,20 @@ async def _run_notion_sync_candidates(
         )
 
     return summary
+
+
+def _resolve_candidate_service(
+    *,
+    candidate: NotionSyncCandidate,
+    service: NotionSyncService | None,
+    target_manager: NotionTargetManager | None,
+) -> NotionSyncService | None:
+    if target_manager is not None:
+        resolved_service = target_manager.resolve_service_for_candidate(candidate)
+        if resolved_service is None:
+            return None
+        return resolved_service.service
+    return service
 
 
 def _get_service_database_id(service: NotionSyncService) -> str | None:

@@ -11,7 +11,9 @@ from app.notion_sync.models import (
     NotionPageResult,
     NotionSyncCandidate,
     NotionSyncDocument,
+    NotionSyncSourceScope,
 )
+from app.notion_sync.targets import NotionTargetConfig
 
 
 class DummyCollector:
@@ -35,6 +37,8 @@ class InMemoryNotionSyncRepository:
                 pricing_status="resolved",
                 notion_sync_status="pending",
                 captured_at=datetime(2026, 3, 25, tzinfo=timezone.utc),
+                source_type="group",
+                group_id="group-123",
             ),
             "doc-synced": NotionSyncDocument(
                 document_id="doc-synced",
@@ -53,6 +57,8 @@ class InMemoryNotionSyncRepository:
                 notion_sync_status="synced",
                 notion_last_synced_at=datetime(2026, 3, 26, tzinfo=timezone.utc),
                 captured_at=datetime(2026, 3, 24, tzinfo=timezone.utc),
+                source_type="group",
+                group_id="group-999",
             ),
             "doc-failed": NotionSyncDocument(
                 document_id="doc-failed",
@@ -63,6 +69,8 @@ class InMemoryNotionSyncRepository:
                 notion_sync_error="simulated old failure",
                 notion_sync_retry_count=2,
                 captured_at=datetime(2026, 3, 23, tzinfo=timezone.utc),
+                source_type="group",
+                group_id="group-123",
             ),
         }
 
@@ -71,6 +79,7 @@ class InMemoryNotionSyncRepository:
             self._to_candidate(item)
             for item in self.documents.values()
             if item.notion_sync_status != "synced"
+            and _matches_source_scope(item, source_scope)
         ]
         items.sort(
             key=lambda item: item.captured_at
@@ -81,7 +90,11 @@ class InMemoryNotionSyncRepository:
         return items[:limit]
 
     def find_all(self, limit: int | None = None, source_scope=None):
-        items = [self._to_candidate(item) for item in self.documents.values()]
+        items = [
+            self._to_candidate(item)
+            for item in self.documents.values()
+            if _matches_source_scope(item, source_scope)
+        ]
         items.sort(
             key=lambda item: item.captured_at
             or datetime.min.replace(tzinfo=timezone.utc)
@@ -96,10 +109,12 @@ class InMemoryNotionSyncRepository:
             return None
         return self._to_candidate(document)
 
-    def list_documents(self, limit: int, statuses=None):
+    def list_documents(self, limit: int, statuses=None, source_scope=None):
         items = list(self.documents.values())
         if statuses:
             items = [item for item in items if item.notion_sync_status in statuses]
+        if source_scope is not None:
+            items = [item for item in items if _matches_source_scope(item, source_scope)]
         items.sort(
             key=lambda item: item.captured_at
             or datetime.min.replace(tzinfo=timezone.utc),
@@ -146,6 +161,10 @@ class InMemoryNotionSyncRepository:
             notion_last_attempt_at=datetime(2026, 3, 27, tzinfo=timezone.utc),
             notion_last_synced_at=datetime(2026, 3, 27, tzinfo=timezone.utc),
             captured_at=current.captured_at,
+            source_type=current.source_type,
+            group_id=current.group_id,
+            room_id=current.room_id,
+            user_id=current.user_id,
         )
 
     def mark_failed(self, document_id: str, error: str) -> None:
@@ -179,6 +198,10 @@ class InMemoryNotionSyncRepository:
             notion_last_attempt_at=datetime(2026, 3, 27, tzinfo=timezone.utc),
             notion_last_synced_at=current.notion_last_synced_at,
             captured_at=current.captured_at,
+            source_type=current.source_type,
+            group_id=current.group_id,
+            room_id=current.room_id,
+            user_id=current.user_id,
         )
 
     def _to_candidate(self, item: NotionSyncDocument) -> NotionSyncCandidate:
@@ -205,33 +228,51 @@ class InMemoryNotionSyncRepository:
             notion_page_id=item.notion_page_id,
             notion_database_id=item.notion_database_id,
             notion_data_source_id=item.notion_data_source_id,
+            source_type=item.source_type,
+            group_id=item.group_id,
+            room_id=item.room_id,
+            user_id=item.user_id,
         )
 
 
 class FakeNotionSyncService:
-    def __init__(self) -> None:
-        self.parent_page_id = "page-parent"
-        self.database_id = ""
-        self.data_source_id = ""
-        self.database_title = "Nihon LINE Bot Lodgings"
-        self.database_url = ""
-        self.public_database_url = ""
+    def __init__(
+        self,
+        *,
+        parent_page_id: str = "page-parent",
+        database_id: str = "",
+        data_source_id: str = "",
+        database_title: str = "Nihon LINE Bot Lodgings",
+        database_url: str = "",
+        public_database_url: str = "",
+    ) -> None:
+        self.parent_page_id = parent_page_id
+        self.database_id = database_id
+        self.data_source_id = data_source_id
+        self.database_title = database_title
+        self.database_url = database_url
+        self.public_database_url = public_database_url
         self.calls: list[str] = []
         self.failing_document_ids: set[str] = set()
 
     @property
     def is_setup_configured(self) -> bool:
-        return True
+        return bool(self.parent_page_id or self.data_source_id)
 
     @property
     def is_sync_configured(self) -> bool:
         return bool(self.data_source_id)
 
     async def setup_database(self, title: str | None = None) -> NotionDatabaseTarget:
-        self.database_id = "db-123"
-        self.data_source_id = "ds-456"
-        self.database_url = "https://www.notion.so/workspace/db-123?v=view-456"
-        self.public_database_url = "https://www.notion.so/public-db-123"
+        if not self.data_source_id:
+            self.data_source_id = "ds-456"
+        if not self.database_id:
+            suffix = self.data_source_id.removeprefix("ds-")
+            self.database_id = f"db-{suffix}"
+        self.database_url = (
+            f"https://www.notion.so/workspace/{self.database_id}?v=view-{self.data_source_id}"
+        )
+        self.public_database_url = f"https://www.notion.so/public-{self.database_id}"
         if title:
             self.database_title = title
         return NotionDatabaseTarget(
@@ -241,6 +282,28 @@ class FakeNotionSyncService:
             url=self.database_url,
             public_url=self.public_database_url,
         )
+
+    def clone_with_target(
+        self,
+        *,
+        parent_page_id: str = "",
+        database_id: str = "",
+        data_source_id: str = "",
+        database_title: str = "Nihon LINE Bot Lodgings",
+        database_url: str = "",
+        public_database_url: str = "",
+    ) -> "FakeNotionSyncService":
+        clone = FakeNotionSyncService(
+            parent_page_id=parent_page_id,
+            database_id=database_id,
+            data_source_id=data_source_id,
+            database_title=database_title,
+            database_url=database_url,
+            public_database_url=public_database_url,
+        )
+        clone.calls = self.calls
+        clone.failing_document_ids = self.failing_document_ids
+        return clone
 
     async def sync_document(self, candidate: NotionSyncCandidate) -> NotionPageResult:
         document_id = str(candidate.document_id)
@@ -261,6 +324,22 @@ class FakeNotionSyncService:
             page_url=f"https://www.notion.so/page-{document_id}",
             created=True,
         )
+
+
+class InMemoryNotionTargetRepository:
+    def __init__(self) -> None:
+        self.targets: dict[tuple[str, str], NotionTargetConfig] = {}
+
+    def find_by_source_scope(
+        self,
+        source_scope: NotionSyncSourceScope,
+    ) -> NotionTargetConfig | None:
+        return self.targets.get(_scope_key(source_scope))
+
+    def save(self, target: NotionTargetConfig) -> None:
+        source_scope = target.source_scope
+        assert source_scope is not None
+        self.targets[_scope_key(source_scope)] = target
 
 
 def test_notion_setup_endpoint_creates_database_and_updates_settings() -> None:
@@ -284,15 +363,15 @@ def test_notion_setup_endpoint_creates_database_and_updates_settings() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["message"] == "Notion database is ready for lodging sync."
-    assert body["data"]["database_id"] == "db-123"
+    assert body["data"]["database_id"] == "db-456"
     assert body["data"]["data_source_id"] == "ds-456"
     assert body["data"]["database_title"] == "Trip Lodgings"
-    assert body["data"]["database_url"] == "https://www.notion.so/workspace/db-123?v=view-456"
-    assert body["data"]["database_public_url"] == "https://www.notion.so/public-db-123"
-    assert settings.notion_database_id == "db-123"
+    assert body["data"]["database_url"] == "https://www.notion.so/workspace/db-456?v=view-ds-456"
+    assert body["data"]["database_public_url"] == "https://www.notion.so/public-db-456"
+    assert settings.notion_database_id == "db-456"
     assert settings.notion_data_source_id == "ds-456"
-    assert settings.notion_database_url == "https://www.notion.so/workspace/db-123?v=view-456"
-    assert settings.notion_public_database_url == "https://www.notion.so/public-db-123"
+    assert settings.notion_database_url == "https://www.notion.so/workspace/db-456?v=view-ds-456"
+    assert settings.notion_public_database_url == "https://www.notion.so/public-db-456"
 
 
 def test_notion_sync_documents_endpoint_lists_repository_state() -> None:
@@ -315,6 +394,7 @@ def test_notion_sync_documents_endpoint_lists_repository_state() -> None:
     assert body["message"] == "Fetched Notion sync documents."
     assert body["data"]["documents"][0]["document_id"] == "doc-pending"
     assert body["data"]["documents"][0]["notion_sync_status"] == "pending"
+    assert body["data"]["documents"][0]["group_id"] == "group-123"
     assert body["data"]["documents"][1]["document_id"] == "doc-synced"
     assert body["data"]["documents"][1]["notion_page_id"] == "page-existing"
 
@@ -347,6 +427,7 @@ def test_notion_sync_run_endpoint_processes_pending_documents() -> None:
     assert body["data"]["created"] == 2
     assert body["data"]["updated"] == 0
     assert body["data"]["failed"] == 0
+    assert body["data"]["target_source"] == "default"
     assert repository.documents["doc-pending"].notion_sync_status == "synced"
     assert repository.documents["doc-failed"].notion_sync_status == "synced"
     assert repository.documents["doc-pending"].notion_data_source_id == "ds-456"
@@ -379,3 +460,137 @@ def test_notion_sync_retry_endpoint_marks_failure() -> None:
     assert body["data"]["failed"] == 1
     assert repository.documents["doc-failed"].notion_sync_status == "failed"
     assert repository.documents["doc-failed"].notion_sync_retry_count == 3
+
+
+def test_notion_setup_endpoint_can_store_scoped_target() -> None:
+    settings = Settings(
+        notion_api_token="secret",
+        notion_parent_page_id="page-parent",
+    )
+    repository = InMemoryNotionSyncRepository()
+    target_repository = InMemoryNotionTargetRepository()
+    service = FakeNotionSyncService(parent_page_id="")
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=DummyCollector(),
+            notion_sync_repository=repository,
+            notion_sync_service=service,
+            notion_target_repository=target_repository,
+        )
+    )
+
+    response = client.post(
+        "/jobs/notion-sync/setup",
+        json={
+            "title": "Group Trip",
+            "source_type": "group",
+            "group_id": "group-123",
+            "parent_page_id": "page-group-123",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["target_source"] == "scoped"
+    assert body["data"]["group_id"] == "group-123"
+    assert settings.notion_database_id == ""
+    stored_target = target_repository.find_by_source_scope(
+        NotionSyncSourceScope(source_type="group", group_id="group-123")
+    )
+    assert stored_target is not None
+    assert stored_target.parent_page_id == "page-group-123"
+    assert stored_target.data_source_id == "ds-456"
+
+
+def test_notion_sync_run_endpoint_can_use_scoped_target() -> None:
+    settings = Settings(
+        notion_api_token="secret",
+        notion_sync_batch_size=10,
+    )
+    repository = InMemoryNotionSyncRepository()
+    target_repository = InMemoryNotionTargetRepository()
+    target_repository.save(
+        NotionTargetConfig.from_source_scope(
+            NotionSyncSourceScope(source_type="group", group_id="group-123"),
+            parent_page_id="page-group-123",
+            database_id="db-group-123",
+            data_source_id="ds-group-123",
+            database_title="Group Trip",
+            database_url="https://www.notion.so/workspace/db-group-123?v=view-group-123",
+            public_database_url="https://www.notion.so/public-db-group-123",
+        )
+    )
+    service = FakeNotionSyncService(parent_page_id="")
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=DummyCollector(),
+            notion_sync_repository=repository,
+            notion_sync_service=service,
+            notion_target_repository=target_repository,
+        )
+    )
+
+    response = client.post(
+        "/jobs/notion-sync/run",
+        json={"source_type": "group", "group_id": "group-123"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["target_source"] == "scoped"
+    assert body["data"]["group_id"] == "group-123"
+    assert repository.documents["doc-pending"].notion_data_source_id == "ds-group-123"
+    assert repository.documents["doc-failed"].notion_data_source_id == "ds-group-123"
+
+
+def test_notion_sync_documents_endpoint_can_filter_by_scope() -> None:
+    settings = Settings()
+    repository = InMemoryNotionSyncRepository()
+    service = FakeNotionSyncService()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=DummyCollector(),
+            notion_sync_repository=repository,
+            notion_sync_service=service,
+        )
+    )
+
+    response = client.get(
+        "/jobs/notion-sync/documents",
+        params={"limit": 10, "source_type": "group", "group_id": "group-123"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["document_id"] for item in body["data"]["documents"]] == [
+        "doc-pending",
+        "doc-failed",
+    ]
+
+
+def _matches_source_scope(
+    item: NotionSyncDocument,
+    source_scope: NotionSyncSourceScope | None,
+) -> bool:
+    if source_scope is None:
+        return True
+    if item.source_type != source_scope.source_type:
+        return False
+    if source_scope.source_type == "group":
+        return item.group_id == source_scope.group_id
+    if source_scope.source_type == "room":
+        return item.room_id == source_scope.room_id
+    if source_scope.source_type == "user":
+        return item.user_id == source_scope.user_id
+    return False
+
+
+def _scope_key(source_scope: NotionSyncSourceScope) -> tuple[str, str]:
+    if source_scope.source_type == "group":
+        return ("group", str(source_scope.group_id))
+    if source_scope.source_type == "room":
+        return ("room", str(source_scope.room_id))
+    return ("user", str(source_scope.user_id))

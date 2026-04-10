@@ -6,8 +6,10 @@ from app.collector import create_collector
 from app.config import Settings
 from app.notion_sync import (
     HttpNotionClient,
+    MongoNotionTargetRepository,
     MongoNotionSyncRepository,
     NotionLodgingSyncService,
+    NotionTargetManager,
     run_notion_sync_job,
 )
 
@@ -20,13 +22,11 @@ def main() -> None:
             raise RuntimeError("MongoDB collection is not available for Notion sync.")
         if not settings.notion_api_token:
             raise RuntimeError("NOTION_API_TOKEN is required for Notion sync.")
-        if not settings.notion_data_source_id:
-            raise RuntimeError(
-                "NOTION_DATA_SOURCE_ID is required for Notion sync. "
-                "Use /jobs/notion-sync/setup first if needed."
-            )
 
         repository = MongoNotionSyncRepository(collector.collection)
+        target_repository = MongoNotionTargetRepository(
+            collector.collection.database[settings.notion_target_collection]
+        )
         service = NotionLodgingSyncService(
             HttpNotionClient(
                 settings.notion_api_token,
@@ -37,12 +37,16 @@ def main() -> None:
             database_id=settings.notion_database_id,
             data_source_id=settings.notion_data_source_id,
             database_title=settings.notion_database_title,
+            database_url=settings.notion_database_url,
+            public_database_url=settings.notion_public_database_url,
         )
+        target_manager = NotionTargetManager(service, target_repository)
         summary = asyncio.run(
             run_notion_sync_job(
                 repository=repository,
                 service=service,
                 limit=settings.notion_sync_batch_size,
+                target_manager=target_manager,
             )
         )
         print(

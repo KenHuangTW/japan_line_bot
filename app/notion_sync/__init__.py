@@ -22,6 +22,16 @@ from app.notion_sync.service import (
     build_notion_data_source_properties,
     build_notion_page_properties,
 )
+from app.notion_sync.targets import (
+    MongoNotionTargetRepository,
+    NotionTargetConfig,
+    NotionTargetManager,
+    NotionTargetRepository,
+    ResolvedNotionService,
+    build_source_scope,
+    source_scope_from_candidate,
+    source_scope_to_fields,
+)
 
 __all__ = [
     "MongoNotionSyncRepository",
@@ -34,6 +44,11 @@ __all__ = [
     "NotionSyncCandidate",
     "NotionSyncDocument",
     "NotionSyncSourceScope",
+    "NotionTargetConfig",
+    "NotionTargetRepository",
+    "MongoNotionTargetRepository",
+    "NotionTargetManager",
+    "ResolvedNotionService",
     "DEFAULT_NOTION_DATABASE_TITLE",
     "NOTION_API_VERSION",
     "HttpNotionClient",
@@ -42,4 +57,7 @@ __all__ = [
     "NotionLodgingSyncService",
     "build_notion_data_source_properties",
     "build_notion_page_properties",
+    "build_source_scope",
+    "source_scope_from_candidate",
+    "source_scope_to_fields",
 ]
