@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.line_media import normalize_line_image_url
 from app.lodging_links.agoda import classify_agoda_url
 from app.lodging_links.airbnb import classify_airbnb_url, is_airbnb_hostname
 from app.lodging_links.booking import classify_booking_url
@@ -20,6 +21,7 @@ from app.map_enrichment.google_maps import (
     build_google_maps_url,
 )
 from app.map_enrichment.html_parser import (
+    extract_lodging_hero_image_url,
     parse_lodging_map,
     parse_lodging_map_from_url,
 )
@@ -60,6 +62,8 @@ class LodgingMapEnrichmentService:
     async def enrich(self, url: str) -> EnrichedLodgingMap | None:
         target_url = await self._resolve_target_url(url)
         html = await self.fetcher.fetch(target_url)
+        hero_image_url = extract_lodging_hero_image_url(html, base_url=target_url)
+        line_hero_image_url = normalize_line_image_url(hero_image_url)
         parsed = parse_lodging_map(html)
         agoda_parsed = await self._parse_agoda_secondary_data(target_url, html)
         parsed = _merge_candidates(parsed, agoda_parsed)
@@ -95,6 +99,8 @@ class LodgingMapEnrichmentService:
             resolved_url=target_url,
             resolved_hostname=normalize_hostname(urlsplit(target_url).hostname),
             property_name=parsed.property_name,
+            hero_image_url=hero_image_url,
+            line_hero_image_url=line_hero_image_url,
             formatted_address=parsed.formatted_address,
             street_address=parsed.street_address,
             district=parsed.district,

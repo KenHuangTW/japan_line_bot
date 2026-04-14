@@ -8,6 +8,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ParsedLodgingMap:
     property_name: str | None = None
+    hero_image_url: str | None = None
     formatted_address: str | None = None
     street_address: str | None = None
     district: str | None = None
@@ -54,6 +55,8 @@ class EnrichedLodgingMap:
     resolved_url: str | None = None
     resolved_hostname: str | None = None
     property_name: str | None = None
+    hero_image_url: str | None = None
+    line_hero_image_url: str | None = None
     formatted_address: str | None = None
     street_address: str | None = None
     district: str | None = None
@@ -128,6 +131,8 @@ class MapEnrichmentDocument:
     pricing_status: str | None = None
     pricing_source: str | None = None
     property_name: str | None = None
+    hero_image_url: str | None = None
+    line_hero_image_url: str | None = None
     formatted_address: str | None = None
     street_address: str | None = None
     district: str | None = None

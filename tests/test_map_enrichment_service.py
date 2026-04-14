@@ -64,6 +64,7 @@ class FakePriceConverter:
 def test_lodging_map_enrichment_service_builds_coordinate_query() -> None:
     url = "https://www.booking.com/hotel/jp/resol.html"
     html = """
+    <meta property="og:image" content="https://cdn.example.com/hotels/resol.jpg" />
     <script type="application/ld+json">
       {
         "@type": "Hotel",
@@ -99,6 +100,8 @@ def test_lodging_map_enrichment_service_builds_coordinate_query() -> None:
 
     assert enriched is not None
     assert enriched.property_name == "Hotel Resol Ueno"
+    assert enriched.hero_image_url == "https://cdn.example.com/hotels/resol.jpg"
+    assert enriched.line_hero_image_url == "https://cdn.example.com/hotels/resol.jpg"
     assert enriched.city == "台東區"
     assert enriched.country_code == "JP"
     assert enriched.property_type == "飯店"
@@ -115,6 +118,52 @@ def test_lodging_map_enrichment_service_builds_coordinate_query() -> None:
     query = parse_qs(urlsplit(enriched.google_maps_url).query)
     assert query["api"] == ["1"]
     assert query["query"] == ["35.712345,139.778901"]
+
+
+def test_lodging_map_enrichment_service_extracts_structured_data_image_when_meta_missing() -> None:
+    url = "https://www.airbnb.com/rooms/123456789"
+    html = """
+    <script type="application/ld+json">
+      {
+        "@type": "VacationRental",
+        "name": "Shinjuku Loft",
+        "image": [
+          {"url": "/images/shinjuku-loft.jpg"}
+        ],
+        "address": {
+          "addressLocality": "Tokyo",
+          "addressCountry": "JP"
+        }
+      }
+    </script>
+    """
+    service = LodgingMapEnrichmentService(FakePageFetcher({url: html}))
+
+    enriched = asyncio.run(service.enrich(url))
+
+    assert enriched is not None
+    assert enriched.hero_image_url == "https://www.airbnb.com/images/shinjuku-loft.jpg"
+    assert enriched.line_hero_image_url == "https://www.airbnb.com/images/shinjuku-loft.jpg"
+
+
+def test_lodging_map_enrichment_service_keeps_raw_image_but_drops_non_line_image() -> None:
+    url = "https://www.booking.com/hotel/jp/webp-only.html"
+    html = """
+    <meta property="og:image" content="https://cdn.example.com/hotels/webp-only.webp" />
+    <script type="application/ld+json">
+      {
+        "@type": "Hotel",
+        "name": "WebP Hotel"
+      }
+    </script>
+    """
+    service = LodgingMapEnrichmentService(FakePageFetcher({url: html}))
+
+    enriched = asyncio.run(service.enrich(url))
+
+    assert enriched is not None
+    assert enriched.hero_image_url == "https://cdn.example.com/hotels/webp-only.webp"
+    assert enriched.line_hero_image_url is None
 
 
 def test_default_browser_headers_prefer_traditional_chinese() -> None:

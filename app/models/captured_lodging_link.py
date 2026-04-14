@@ -43,6 +43,14 @@ class CapturedLodgingLink(BaseModel):
         default=None,
         description="解析住宿頁後得到的住宿名稱。",
     )
+    hero_image_url: str | None = Field(
+        default=None,
+        description="住宿頁主視覺或第一張房源圖片 URL。",
+    )
+    line_hero_image_url: str | None = Field(
+        default=None,
+        description="可直接用於 LINE Flex hero image 的相容圖片 URL。",
+    )
     formatted_address: str | None = Field(
         default=None,
         description="解析住宿頁後得到的格式化地址。",

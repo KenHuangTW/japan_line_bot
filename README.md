@@ -1,6 +1,6 @@
 # Nihon LINE Bot
 
-Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓每個 LINE 聊天室先切到「目前旅次」，再把聊天裡出現的住宿連結收進 MongoDB、補齊住宿頁地圖與價格資訊，最後同步到該旅次對應的 Notion。
+Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓每個 LINE 聊天室先切到「目前旅次」，再把聊天裡出現的住宿連結收進 MongoDB、補齊住宿頁地圖與價格資訊，並直接從 Mongo canonical data 產生 `/清單` preview 與只讀旅次頁。Notion 仍然保留，但定位改成可選的 export / manual maintenance surface，而不是主要瀏覽介面。
 
 目前支援的主流程：
 
@@ -10,7 +10,8 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 4. 只保留支援的 Booking.com / Agoda / Airbnb 住宿頁，必要時先解析分享短網址。
 5. 以目前旅次範圍做重複判斷後寫入 MongoDB。
 6. 透過 enrichment job 補上名稱、地址、座標、設備、價格與 Google Maps 連結。
-7. 透過 Notion sync job 將資料建立或更新到旅次對應的 Notion data source。
+7. `/清單` 會直接從 Mongo canonical data 回傳旅次 preview，並附上只讀旅次頁連結。
+8. 透過 Notion sync job 將資料建立或更新到旅次對應的 Notion data source；若有設定 target，旅次頁也會提供 Notion 匯出捷徑。
 
 ## 功能重點
 
@@ -18,10 +19,14 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - 支援 Agoda / Booking 分享短網址解析後再判斷是否為住宿頁。
 - 每個 LINE 聊天室都可以建立、切換、查詢與封存 active trip。
 - 同一聊天室內只在同一個旅次判定重複；不同旅次可保留相同房源。
+- 提供 mobile-friendly 的只讀旅次頁，直接從 Mongo 顯示候選住宿，支援基本篩選與排序。
+- `/清單` 會回 LINE Flex carousel，每筆候選住宿一張卡片；若 Mongo 已存好 `line_hero_image_url`，會直接顯示 hero image，再引導到房源頁與旅次詳情頁。
 - 可選擇在成功收錄或發現重複連結時直接回覆 LINE。
 - 提供住宿 enrichment API 與 Notion sync API，方便手動觸發或串接排程。
 - 提供 `/help`、`/ping`、`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理`、`/全部重來` 九個 LINE 指令。
 - 提供 shell / PowerShell 腳本協助啟動 MongoDB、服務與測試。
+
+旅次顯示層的操作與未來 AI 摘要整合點，請參考 [docs/trip-display-surface.md](docs/trip-display-surface.md)。
 
 ## 資料流程
 
@@ -34,9 +39,11 @@ LINE message
   -> resolve share links
   -> dedupe within the same trip
   -> MongoDB captured_lodging_links
+  -> /清單 LINE preview
+  -> /trips/{display_token} read-only trip detail surface
   -> lodging enrichment job
-  -> Notion sync job
-  -> trip-scoped Notion data source
+  -> optional Notion sync job
+  -> trip-scoped Notion data source (optional export)
 ```
 
 ## 專案結構
@@ -50,10 +57,12 @@ app/
   notion_sync/         Notion data source 建立與同步邏輯
   routers/             FastAPI 路由
   schemas/             API request / response schema
+  trip_display/        旅次顯示層的 query model、rendering 與 Mongo aggregation
   collector.py         MongoDB collector 建立
   config.py            環境變數設定
   main.py              FastAPI app 組裝入口
 tests/                 單元測試與 API / webhook 測試
+docs/                  操作說明與產品行為文件
 Dockerfile             單容器部署設定
 docker-compose.yml     server + MongoDB 本機整套啟動
 start.sh / start.ps1   啟動 FastAPI
@@ -245,8 +254,8 @@ curl http://127.0.0.1:8000/healthz
 | `NOTION_DATABASE_ID` | 空字串 | 已存在的 Notion database id。 |
 | `NOTION_DATA_SOURCE_ID` | 空字串 | 已存在的 Notion data source id。 |
 | `NOTION_DATABASE_TITLE` | `Nihon LINE Bot Lodgings` | setup 時預設資料庫名稱。 |
-| `NOTION_DATABASE_URL` | 空字串 | 資料庫 URL 快取，可選填。 |
-| `NOTION_PUBLIC_DATABASE_URL` | 空字串 | 公開分享 URL 快取，可選填，`/清單` 會優先回傳它。 |
+| `NOTION_DATABASE_URL` | 空字串 | 資料庫 URL 快取，可選填，供 Notion target 校正或 fallback 使用。 |
+| `NOTION_PUBLIC_DATABASE_URL` | 空字串 | 公開分享 URL 快取，可選填，供 Notion export target 使用。 |
 | `NOTION_TARGET_COLLECTION` | `notion_targets` | 儲存聊天室對 Notion target 映射的 Mongo collection。 |
 | `NOTION_API_VERSION` | `2026-03-11` | Notion API version header。 |
 | `NOTION_REQUEST_TIMEOUT` | `10.0` | Notion HTTP request timeout。 |
@@ -299,7 +308,7 @@ curl http://127.0.0.1:8000/healthz
 | `/切換旅次 <名稱>` | 切換到同一聊天室內既有、未封存的旅次。 |
 | `/目前旅次` | 查看目前啟用中的旅次名稱與旅次 ID。 |
 | `/封存旅次` | 封存目前旅次，並清空 active trip。 |
-| `/清單` | 回傳目前旅次對應的 Notion 住宿清單連結。 |
+| `/清單` | 回傳目前旅次的 LINE Flex carousel；每筆候選住宿一張卡片，並附上旅次詳情頁與可用時的 Notion 匯出捷徑。 |
 | `/整理` | 只針對目前旅次範圍，先跑 lodging enrichment，再同步 pending / failed / 有更新的資料到 Notion。 |
 | `/全部重來` | 只針對目前旅次範圍，忽略既有同步狀態，先重跑 enrichment，再強制同步所有資料到 Notion；若有預設 Notion parent page，也會自動建立該旅次的 target。 |
 
@@ -307,7 +316,7 @@ curl http://127.0.0.1:8000/healthz
 
 - 貼住宿連結前必須先有 active trip，否則 bot 只會回覆旅次建立 / 切換提示，不會收錄資料。
 - `/清單`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
-- Notion target 未設定完成時，`/清單`、`/整理`、`/全部重來` 不會成功。
+- Notion target 未設定完成時，`/清單` 仍可正常顯示 Mongo preview 與旅次頁，但不會出現 Notion 匯出捷徑；`/整理`、`/全部重來` 仍需要 Notion sync 設定。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，指令仍會執行，但 bot 無法回覆訊息。
 
 ## API 總覽
@@ -340,7 +349,19 @@ response：
 
 `captured` 代表本次實際新增的文件數，不含被判定為重複的連結。
 
-### 3. Lodging enrichment API
+### 3. Trip display
+
+| Method | Path | 說明 |
+| --- | --- | --- |
+| `GET` | `/trips/{display_token}` | 手機友善的只讀旅次頁，直接從 Mongo 顯示候選住宿，支援 `platform`、`availability`、`sort` query 參數。 |
+
+行為說明：
+
+- `display_token` 是穩定的旅次分享 token，不會暴露 raw `group_id` / `room_id` / `user_id`。
+- token 有效時，頁面會顯示住宿名稱、平台、價格、可訂狀態、地圖連結與 Notion 匯出捷徑（若該旅次有 target）。
+- token 無效時，會回 `404 Invalid trip display link.`。
+
+### 4. Lodging enrichment API
 
 Swagger tag 為 `lodging-enrichment`。
 
@@ -387,7 +408,7 @@ Swagger tag 為 `lodging-enrichment`。
 4. 若需要全部重跑，呼叫 `POST /jobs/lodging-enrichment/documents/retry-all`
 5. 若只要重跑單筆，呼叫 `POST /jobs/lodging-enrichment/documents/{document_id}/retry`
 
-### 4. Notion sync API
+### 5. Notion sync API
 
 Swagger tag 為 `notion-sync`。
 
@@ -732,6 +753,7 @@ python -m app.notion_sync_job
 
 - `start.sh` / `start.ps1` 會要求 `.env` 存在，否則不會啟動。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，系統仍可驗證 webhook 並寫入 MongoDB，但所有 reply message 都會失效。
-- `NOTION_PUBLIC_DATABASE_URL` 只作為全域 default fallback；若文件帶有 `trip_id`，系統只會找對應旅次的 target，不會回退到全域 default `/清單`。
+- Mongo 是旅次顯示層的 source of truth；Notion target 只會影響 export / sync，不影響 `/清單` 與 `/trips/{display_token}` 的主顯示流程。
 - 若你在 Notion 建好 data source 後想長期固定使用同一份全域資料，建議把 setup 回傳的 id 回填到 `.env`。
 - 若你要開始規劃新旅次，先在 LINE 用 `/建立旅次 <名稱>` 建立 active trip，再為該旅次呼叫 scoped `POST /jobs/notion-sync/setup`，或直接執行 `/全部重來` 讓系統建立 trip-scoped target。
+- 未來若要把 `add-lodging-decision-summary` 接上旅次摘要，請直接重用 `app.trip_display` 的 canonical payload 與 [docs/trip-display-surface.md](docs/trip-display-surface.md) 中定義的整合點。

@@ -45,6 +45,8 @@ class MapEnrichmentDocumentResponse(BaseModel):
     pricing_status: str | None = None
     pricing_source: str | None = None
     property_name: str | None = None
+    hero_image_url: str | None = None
+    line_hero_image_url: str | None = None
     formatted_address: str | None = None
     street_address: str | None = None
     district: str | None = None

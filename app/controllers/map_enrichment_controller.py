@@ -142,6 +142,8 @@ def build_map_enrichment_documents_response(
             pricing_status=item.pricing_status,
             pricing_source=item.pricing_source,
             property_name=item.property_name,
+            hero_image_url=item.hero_image_url,
+            line_hero_image_url=item.line_hero_image_url,
             formatted_address=item.formatted_address,
             street_address=item.street_address,
             district=item.district,

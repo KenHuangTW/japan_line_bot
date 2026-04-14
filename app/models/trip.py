@@ -16,6 +16,10 @@ class LineTrip(BaseModel):
         default_factory=lambda: uuid4().hex,
         description="旅次識別碼。",
     )
+    display_token: str = Field(
+        default_factory=lambda: uuid4().hex,
+        description="只讀旅次顯示頁使用的穩定分享 token。",
+    )
     title: str = Field(description="旅次名稱。")
     source_type: str = Field(description="LINE source 類型，例如 group 或 room。")
     group_id: str | None = Field(

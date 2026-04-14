@@ -23,6 +23,8 @@ class TripRepository(Protocol):
 
     def get_active_trip(self, source_scope: TripSourceScope) -> LineTrip | None: ...
 
+    def find_trip_by_display_token(self, display_token: str) -> LineTrip | None: ...
+
     def switch_active_trip(
         self,
         source_scope: TripSourceScope,

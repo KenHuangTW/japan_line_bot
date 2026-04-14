@@ -22,6 +22,7 @@ from app.notion_sync.models import (
     NotionSyncSourceScope,
 )
 from app.notion_sync.targets import NotionTargetConfig
+from app.trip_display import MongoTripDisplayRepository
 
 DEFAULT_TRIP_ID = "trip-current"
 DEFAULT_TRIP_TITLE = "東京 2026"
@@ -30,14 +31,46 @@ DEFAULT_TRIP_TITLE = "東京 2026"
 class FakeLineClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.message_calls: list[tuple[str, list[dict[str, Any]]]] = []
+
+    async def reply_messages(
+        self,
+        reply_token: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        self.message_calls.append((reply_token, messages))
 
     async def reply_text(self, reply_token: str, text: str) -> None:
         self.calls.append((reply_token, text))
 
 
 class FailingLineClient:
+    async def reply_messages(
+        self,
+        reply_token: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        raise RuntimeError("simulated LINE reply failure")
+
     async def reply_text(self, reply_token: str, text: str) -> None:
         raise RuntimeError("simulated LINE reply failure")
+
+
+class FlexFailingLineClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.message_calls: list[tuple[str, list[dict[str, Any]]]] = []
+
+    async def reply_messages(
+        self,
+        reply_token: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        self.message_calls.append((reply_token, messages))
+        raise RuntimeError("simulated flex reply failure")
+
+    async def reply_text(self, reply_token: str, text: str) -> None:
+        self.calls.append((reply_token, text))
 
 
 class FakeLodgingUrlResolver:
@@ -140,6 +173,13 @@ class InMemoryTripRepository:
                 return trip.model_copy()
         return None
 
+    def find_trip_by_display_token(self, display_token: str) -> LineTrip | None:
+        normalized_token = display_token.strip()
+        for trip in self.trips:
+            if trip.display_token == normalized_token:
+                return trip.model_copy()
+        return None
+
     def switch_active_trip(
         self,
         source_scope: NotionSyncSourceScope,
@@ -185,6 +225,7 @@ def create_app(
     trip_repository: InMemoryTripRepository | None = None,
     active_trip: bool = True,
     trip_id: str = DEFAULT_TRIP_ID,
+    trip_display_token: str = "trip-display-current",
     trip_title: str = DEFAULT_TRIP_TITLE,
     trip_source_type: str = "group",
     trip_group_id: str | None = "Cgroup123",
@@ -199,6 +240,7 @@ def create_app(
             initial_trips.append(
                 _build_trip(
                     trip_id=trip_id,
+                    display_token=trip_display_token,
                     title=trip_title,
                     source_type=trip_source_type,
                     group_id=trip_group_id,
@@ -429,6 +471,57 @@ class InMemoryNotionTargetRepository:
         self.targets[_scope_key(source_scope)] = target
 
 
+class TripDisplayCursor:
+    def __init__(self, documents: Sequence[dict[str, Any]]) -> None:
+        self.documents = [dict(document) for document in documents]
+
+    def sort(self, key: str, direction: int) -> "TripDisplayCursor":
+        self.documents.sort(
+            key=lambda item: item.get(key),
+            reverse=direction < 0,
+        )
+        return self
+
+    def __iter__(self):
+        return iter(self.documents)
+
+
+class TripDisplayCollection:
+    def __init__(self, documents: Sequence[dict[str, Any]]) -> None:
+        self.documents = [dict(document) for document in documents]
+
+    def find(self, query: dict[str, Any]) -> TripDisplayCursor:
+        matches = [
+            document
+            for document in self.documents
+            if all(document.get(key) == value for key, value in query.items())
+        ]
+        return TripDisplayCursor(matches)
+
+
+def _build_trip_display_repository(
+    items: Sequence[CapturedLodgingLink],
+    *,
+    notion_target_repository: InMemoryNotionTargetRepository | None = None,
+):
+    documents = []
+    for index, item in enumerate(items, start=1):
+        document = item.model_dump(mode="python")
+        document["_id"] = f"doc-{index}"
+        documents.append(document)
+    return MongoTripDisplayRepository(
+        TripDisplayCollection(documents),
+        notion_target_repository,
+    )
+
+
+def _single_message_call(
+    fake_line_client: FakeLineClient,
+) -> tuple[str, list[dict[str, Any]]]:
+    assert len(fake_line_client.message_calls) == 1
+    return fake_line_client.message_calls[0]
+
+
 class InMemoryMapEnrichmentRepository:
     def __init__(
         self,
@@ -655,6 +748,8 @@ class SharedMapEnrichmentRepository:
                     enrichment.resolved_hostname or document.item.resolved_hostname
                 ),
                 "property_name": enrichment.property_name,
+                "hero_image_url": enrichment.hero_image_url,
+                "line_hero_image_url": enrichment.line_hero_image_url,
                 "formatted_address": enrichment.formatted_address,
                 "street_address": enrichment.street_address,
                 "district": enrichment.district,
@@ -1099,6 +1194,7 @@ def _matches_captured_source(
 def _build_trip(
     *,
     trip_id: str = DEFAULT_TRIP_ID,
+    display_token: str = "trip-display-current",
     title: str = DEFAULT_TRIP_TITLE,
     source_type: str = "group",
     group_id: str | None = "Cgroup123",
@@ -1108,6 +1204,7 @@ def _build_trip(
 ) -> LineTrip:
     return LineTrip(
         trip_id=trip_id,
+        display_token=display_token,
         title=title,
         source_type=source_type,
         group_id=group_id,
@@ -1450,7 +1547,7 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "/切換旅次：切換到既有旅次，格式：/切換旅次 <名稱>\n"
                 "/目前旅次：查看目前啟用中的旅次\n"
                 "/封存旅次：封存目前旅次並清空 active trip\n"
-                "/清單：直接回傳目前旅次的 Notion 住宿清單連結\n"
+                "/清單：回傳目前旅次的住宿 preview 與詳情頁連結\n"
                 "/整理：執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料\n"
                 "/全部重來：忽略既有同步狀態，只把目前旅次中的資料強制重新同步到 Notion"
             ),
@@ -1549,14 +1646,39 @@ def test_line_webhook_blocks_capture_without_active_trip() -> None:
     assert fake_line_client.calls == [("reply-token", "請先建立或切換旅次，再貼住宿連結。用法：/建立旅次 <名稱> 或 /切換旅次 <名稱>")]
 
 
-def test_line_webhook_replies_notion_link_for_list_command() -> None:
+def test_line_webhook_replies_trip_preview_for_list_command() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_service = FakeNotionSyncService()
+    display_items = [
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+            captured_at=datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc),
+        ).model_copy(
+            update={
+                "property_name": "Foo Hotel",
+                "hero_image_url": "https://cdn.example.com/foo.jpg",
+                "line_hero_image_url": "https://cdn.example.com/foo.jpg",
+                "formatted_address": "東京新宿區",
+                "price_amount": 4200,
+                "price_currency": "TWD",
+                "is_sold_out": False,
+            }
+        ),
+        _build_captured_link(
+            "https://www.agoda.com/bar-hotel/hotel/tokyo-jp.html",
+            captured_at=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+        ).model_copy(
+            update={
+                "property_name": "Bar Hotel",
+                "formatted_address": "東京淺草",
+                "is_sold_out": True,
+            }
+        ),
+    ]
     notion_target_repository = InMemoryNotionTargetRepository()
     notion_target_repository.save(
         _build_trip_target(
@@ -1572,7 +1694,10 @@ def test_line_webhook_replies_notion_link_for_list_command() -> None:
             collector=repository,
             line_client=fake_line_client,
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
-            notion_sync_service=notion_service,
+            trip_display_repository=_build_trip_display_repository(
+                display_items,
+                notion_target_repository=notion_target_repository,
+            ),
             notion_target_repository=notion_target_repository,
         )
     )
@@ -1593,36 +1718,53 @@ def test_line_webhook_replies_notion_link_for_list_command() -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
-    assert notion_service.database_url_calls == []
-    assert fake_line_client.calls == [("reply-token", "https://www.notion.so/public-trip-lodgings")]
+    assert fake_line_client.calls == []
+    reply_token, messages = _single_message_call(fake_line_client)
+    assert reply_token == "reply-token"
+    assert len(messages) == 1
+    flex = messages[0]
+    assert flex["type"] == "flex"
+    assert flex["altText"] == "東京 2026：2 筆候選住宿，可訂 1 筆，請開啟旅次詳情查看完整清單。"
+    assert flex["contents"]["type"] == "carousel"
+    bubbles = flex["contents"]["contents"]
+    assert len(bubbles) == 2
+    assert bubbles[0]["hero"]["url"] == "https://cdn.example.com/foo.jpg"
+    assert bubbles[0]["body"]["contents"][0]["text"] == "Foo Hotel"
+    assert bubbles[1]["body"]["contents"][0]["text"] == "Bar Hotel"
+    first_footer = bubbles[0]["footer"]["contents"]
+    assert first_footer[0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
+    assert first_footer[1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
+    assert len(first_footer) == 2
 
 
-def test_line_webhook_prefers_refreshed_public_link_over_cached_internal_link() -> None:
+def test_line_webhook_list_command_works_without_notion_target() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
-        notion_database_url="https://www.notion.so/44155b3c938c4e6e8cea913a7927b7b",
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_service = FakeNotionSyncService()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(
-        _build_trip_target(
-            public_database_url="https://www.notion.so/public-trip-lodgings",
-            database_url=(
-                "https://www.notion.so/workspace/Trip-Lodgings-dbcurrent?v=view-current"
-            ),
-        )
-    )
+    display_items = [
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+        ).model_copy(
+            update={
+                "property_name": "Foo Hotel",
+                "hero_image_url": "https://cdn.example.com/foo.jpg",
+                "line_hero_image_url": "https://cdn.example.com/foo.jpg",
+                "price_amount": 3500,
+                "price_currency": "TWD",
+                "is_sold_out": False,
+            }
+        ),
+    ]
     client = TestClient(
         create_app(
             settings=settings,
             collector=repository,
             line_client=fake_line_client,
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
+            trip_display_repository=_build_trip_display_repository(display_items),
         )
     )
 
@@ -1642,43 +1784,51 @@ def test_line_webhook_prefers_refreshed_public_link_over_cached_internal_link() 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
-    assert notion_service.database_url_calls == []
-    assert settings.notion_public_database_url == ""
-    assert fake_line_client.calls == [("reply-token", "https://www.notion.so/public-trip-lodgings")]
+    assert fake_line_client.calls == []
+    reply_token, messages = _single_message_call(fake_line_client)
+    assert reply_token == "reply-token"
+    assert len(messages) == 1
+    flex = messages[0]
+    assert flex["type"] == "flex"
+    assert flex["contents"]["type"] == "carousel"
+    bubble = flex["contents"]["contents"][0]
+    assert bubble["hero"]["url"] == "https://cdn.example.com/foo.jpg"
+    assert bubble["footer"]["contents"][0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
+    assert bubble["footer"]["contents"][1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
+    assert len(bubble["footer"]["contents"]) == 2
+    assert "Foo Hotel" in json.dumps(flex, ensure_ascii=False)
 
 
-def test_line_webhook_prefers_scoped_notion_link_over_global_default() -> None:
+def test_line_webhook_list_command_falls_back_to_text_when_flex_reply_fails() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
-        notion_public_database_url="https://www.notion.so/public-default-lodgings",
     )
-    fake_line_client = FakeLineClient()
+    line_client = FlexFailingLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_service = FakeNotionSyncService()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(
-        _build_trip_target(
-            parent_page_id="page-group-123",
-            database_id="db-group-123",
-            data_source_id="ds-group-123",
-            database_title="Group Trip",
-            database_url="https://www.notion.so/workspace/db-group-123?v=view-group-123",
-            public_database_url="https://www.notion.so/public-group-123",
-        )
-    )
+    display_items = [
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+        ).model_copy(
+            update={
+                "property_name": "Foo Hotel",
+                "price_amount": 3500,
+                "price_currency": "TWD",
+                "is_sold_out": False,
+            }
+        ),
+    ]
     client = TestClient(
         create_app(
             settings=settings,
             collector=repository,
-            line_client=fake_line_client,
+            line_client=line_client,
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
+            trip_display_repository=_build_trip_display_repository(display_items),
         )
     )
 
-    payload = _build_payload("/清單", source_type="group", group_id="Cgroup123")
+    payload = _build_payload("/清單")
     body = json.dumps(payload).encode("utf-8")
     signature = generate_signature(settings.line_channel_secret, body)
 
@@ -1693,7 +1843,99 @@ def test_line_webhook_prefers_scoped_notion_link_over_global_default() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
-    assert fake_line_client.calls == [("reply-token", "https://www.notion.so/public-group-123")]
+    assert len(line_client.message_calls) == 1
+    assert line_client.calls == [
+        (
+            "reply-token",
+            (
+                "目前旅次：東京 2026\n"
+                "候選住宿 1 筆（可訂 1 / 已售完 0 / 待確認 0）\n"
+                "1. Foo Hotel\n"
+                "Booking.com｜TWD 3,500｜可訂\n"
+                "\n"
+                "旅次詳情：http://testserver/trips/trip-display-current"
+            ),
+        )
+    ]
+
+
+def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    repository = InMemoryCapturedLinkRepository()
+    notion_target_repository = InMemoryNotionTargetRepository()
+    notion_target_repository.save(
+        _build_trip_target(
+            public_database_url="https://www.notion.so/public-trip-lodgings",
+        )
+    )
+    display_items = [
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+            captured_at=datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc),
+        ).model_copy(
+            update={
+                "property_name": "Foo Hotel",
+                "price_amount": 3200,
+                "price_currency": "TWD",
+                "is_sold_out": False,
+                "formatted_address": "東京新宿區",
+                "google_maps_url": "https://maps.google.com/?q=35.1,139.1",
+            }
+        ),
+        _build_captured_link(
+            "https://www.agoda.com/bar-hotel/hotel/tokyo-jp.html",
+            captured_at=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+        ).model_copy(
+            update={
+                "property_name": "Bar Hotel",
+                "is_sold_out": True,
+            }
+        ),
+    ]
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_display_repository=_build_trip_display_repository(
+                display_items,
+                notion_target_repository=notion_target_repository,
+            ),
+            notion_target_repository=notion_target_repository,
+        )
+    )
+
+    response = client.get("/trips/trip-display-current")
+
+    assert response.status_code == 200
+    assert "Foo Hotel" in response.text
+    assert "Bar Hotel" in response.text
+    assert "開啟 Notion 匯出" in response.text
+    assert "東京新宿區" in response.text
+
+    filtered = client.get("/trips/trip-display-current", params={"availability": "available"})
+
+    assert filtered.status_code == 200
+    assert "Foo Hotel" in filtered.text
+    assert "Bar Hotel" not in filtered.text
+
+
+def test_line_webhook_trip_detail_page_rejects_invalid_token() -> None:
+    client = TestClient(
+        create_app(
+            collector=InMemoryCapturedLinkRepository(),
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_display_repository=_build_trip_display_repository([]),
+        )
+    )
+
+    response = client.get("/trips/not-a-real-token")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Invalid trip display link."
 
 
 def test_line_webhook_runs_pending_notion_sync_command() -> None:
@@ -2078,7 +2320,7 @@ def test_line_webhook_reports_when_notion_list_link_is_not_configured() -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
-    assert fake_line_client.calls == [("reply-token", "目前旅次的 Notion 清單連結尚未設定完成。")]
+    assert fake_line_client.calls == [("reply-token", "旅次顯示頁尚未設定完成。")]
 
 
 def test_line_webhook_reports_when_chat_source_cannot_be_identified() -> None:

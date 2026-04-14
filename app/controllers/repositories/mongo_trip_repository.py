@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Protocol
+from uuid import uuid4
 
 from app.controllers.repositories.trip_repository import TripSourceScope
 from app.models.trip import LineTrip
@@ -73,9 +74,7 @@ class MongoTripRepository:
                 "title": _normalize_title(title),
             }
         )
-        if document is None:
-            return None
-        return LineTrip.model_validate(document)
+        return self._hydrate_trip(document)
 
     def get_active_trip(self, source_scope: TripSourceScope) -> LineTrip | None:
         document = self.collection.find_one(
@@ -86,9 +85,14 @@ class MongoTripRepository:
             },
             sort=[("updated_at", -1), ("created_at", -1)],
         )
-        if document is None:
-            return None
-        return LineTrip.model_validate(document)
+        return self._hydrate_trip(document)
+
+    def find_trip_by_display_token(self, display_token: str) -> LineTrip | None:
+        document = self.collection.find_one(
+            {"display_token": display_token.strip()},
+            sort=[("updated_at", -1), ("created_at", -1)],
+        )
+        return self._hydrate_trip(document)
 
     def switch_active_trip(
         self,
@@ -139,6 +143,28 @@ class MongoTripRepository:
                 "updated_at": now,
             }
         )
+
+    def _hydrate_trip(self, document: dict[str, Any] | None) -> LineTrip | None:
+        if document is None:
+            return None
+
+        normalized = dict(document)
+        display_token = normalized.get("display_token")
+        if not isinstance(display_token, str) or not display_token.strip():
+            display_token = uuid4().hex
+            normalized["display_token"] = display_token
+            self.collection.update_one(
+                {"trip_id": normalized.get("trip_id")},
+                {
+                    "$set": {
+                        "display_token": display_token,
+                        "updated_at": normalized.get("updated_at")
+                        or datetime.now(timezone.utc),
+                    }
+                },
+            )
+
+        return LineTrip.model_validate(normalized)
 
 
 def _build_source_scope_query(source_scope: TripSourceScope) -> dict[str, Any]:
