@@ -30,6 +30,7 @@ class MapEnrichmentSourceScope(Protocol):
     group_id: str | None
     room_id: str | None
     user_id: str | None
+    trip_id: str | None
 
 
 class MapEnrichmentRepository(Protocol):
@@ -356,6 +357,8 @@ def _apply_source_scope_query(
         source_query["room_id"] = source_scope.room_id
     elif source_scope.source_type == "user" and source_scope.user_id:
         source_query["user_id"] = source_scope.user_id
+    if source_scope.trip_id:
+        source_query["trip_id"] = source_scope.trip_id
 
     if not query:
         return source_query

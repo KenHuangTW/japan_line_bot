@@ -12,7 +12,7 @@ SyncStatus = Literal["pending", "synced", "failed"]
 class LodgingLinkMatch(BaseModel):
     """Normalized lodging link extracted from a chat message."""
 
-    platform: str = Field(description="住宿平台識別，例如 booking 或 agoda。")
+    platform: str = Field(description="住宿平台識別，例如 booking、agoda 或 airbnb。")
     url: str = Field(description="從訊息中擷取出的原始住宿連結。")
     hostname: str = Field(description="住宿連結對應的 hostname。")
     resolved_url: str | None = Field(
@@ -28,7 +28,7 @@ class LodgingLinkMatch(BaseModel):
 class CapturedLodgingLink(BaseModel):
     """MongoDB document payload for a captured lodging link event."""
 
-    platform: str = Field(description="住宿平台識別，例如 booking 或 agoda。")
+    platform: str = Field(description="住宿平台識別，例如 booking、agoda 或 airbnb。")
     url: str = Field(description="從 LINE 訊息中擷取出的原始住宿連結。")
     hostname: str = Field(description="住宿連結對應的 hostname。")
     resolved_url: str | None = Field(
@@ -220,10 +220,20 @@ class CapturedLodgingLink(BaseModel):
         description="成功解析價格資訊的 UTC 時間。",
     )
     message_text: str = Field(description="使用者送出的原始文字訊息。")
-    source_type: str = Field(description="LINE webhook source 類型，例如 group 或 room。")
+    source_type: str = Field(
+        description="LINE webhook source 類型，例如 group 或 room。"
+    )
     destination: str | None = Field(
         default=None,
         description="LINE bot destination identifier。",
+    )
+    trip_id: str | None = Field(
+        default=None,
+        description="目前旅次的識別碼。",
+    )
+    trip_title: str | None = Field(
+        default=None,
+        description="目前旅次名稱快照。",
     )
     group_id: str | None = Field(
         default=None,

@@ -23,6 +23,8 @@ class NotionTargetConfig:
     group_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
+    trip_id: str | None = None
+    trip_title: str | None = None
     parent_page_id: str | None = None
     database_id: str = ""
     data_source_id: str = ""
@@ -35,6 +37,8 @@ class NotionTargetConfig:
         object.__setattr__(self, "group_id", _normalize_optional(self.group_id))
         object.__setattr__(self, "room_id", _normalize_optional(self.room_id))
         object.__setattr__(self, "user_id", _normalize_optional(self.user_id))
+        object.__setattr__(self, "trip_id", _normalize_optional(self.trip_id))
+        object.__setattr__(self, "trip_title", _normalize_optional(self.trip_title))
         object.__setattr__(
             self,
             "parent_page_id",
@@ -79,6 +83,8 @@ class NotionTargetConfig:
             group_id=source_scope.group_id,
             room_id=source_scope.room_id,
             user_id=source_scope.user_id,
+            trip_id=source_scope.trip_id,
+            trip_title=source_scope.trip_title,
             parent_page_id=parent_page_id,
             database_id=database_id,
             data_source_id=data_source_id,
@@ -94,6 +100,8 @@ class NotionTargetConfig:
             group_id=self.group_id,
             room_id=self.room_id,
             user_id=self.user_id,
+            trip_id=self.trip_id,
+            trip_title=self.trip_title,
         )
 
     @property
@@ -117,6 +125,8 @@ class NotionTargetConfig:
             group_id=self.group_id,
             room_id=self.room_id,
             user_id=self.user_id,
+            trip_id=self.trip_id,
+            trip_title=self.trip_title,
             parent_page_id=self.parent_page_id,
             database_id=target.database_id,
             data_source_id=target.data_source_id,
@@ -176,6 +186,8 @@ class MongoNotionTargetRepository:
             group_id=document.get("group_id"),
             room_id=document.get("room_id"),
             user_id=document.get("user_id"),
+            trip_id=document.get("trip_id"),
+            trip_title=document.get("trip_title"),
             parent_page_id=document.get("parent_page_id"),
             database_id=document.get("database_id", ""),
             data_source_id=document.get("data_source_id", ""),
@@ -198,6 +210,8 @@ class MongoNotionTargetRepository:
                     "group_id": source_scope.group_id,
                     "room_id": source_scope.room_id,
                     "user_id": source_scope.user_id,
+                    "trip_id": source_scope.trip_id,
+                    "trip_title": source_scope.trip_title,
                     "parent_page_id": target.parent_page_id,
                     "database_id": target.database_id or None,
                     "data_source_id": target.data_source_id or None,
@@ -229,6 +243,8 @@ class NotionTargetManager:
             target = self.target_repository.find_by_source_scope(source_scope)
             if target is not None and target.is_setup_configured:
                 return target, "scoped"
+        if source_scope is not None and source_scope.trip_id is not None:
+            return None
 
         default_target = self.default_target
         if default_target is not None and default_target.is_setup_configured:
@@ -343,7 +359,7 @@ class NotionTargetManager:
         target = _build_setup_target(
             source_scope=source_scope,
             existing_target=existing_target,
-            parent_page_id=parent_page_id,
+            parent_page_id=parent_page_id or self.default_service.parent_page_id or None,
             data_source_id=data_source_id,
             default_title=self.default_service.database_title,
         )
@@ -373,17 +389,23 @@ def build_source_scope(
     group_id: str | None = None,
     room_id: str | None = None,
     user_id: str | None = None,
+    trip_id: str | None = None,
+    trip_title: str | None = None,
 ) -> NotionSyncSourceScope | None:
     normalized_source_type = _normalize_optional(source_type)
     normalized_group_id = _normalize_optional(group_id)
     normalized_room_id = _normalize_optional(room_id)
     normalized_user_id = _normalize_optional(user_id)
+    normalized_trip_id = _normalize_optional(trip_id)
+    normalized_trip_title = _normalize_optional(trip_title)
 
     if (
         normalized_source_type is None
         and normalized_group_id is None
         and normalized_room_id is None
         and normalized_user_id is None
+        and normalized_trip_id is None
+        and normalized_trip_title is None
     ):
         return None
 
@@ -396,6 +418,8 @@ def build_source_scope(
         return NotionSyncSourceScope(
             source_type="group",
             group_id=normalized_group_id,
+            trip_id=normalized_trip_id,
+            trip_title=normalized_trip_title,
         )
 
     if normalized_source_type == "room":
@@ -404,6 +428,8 @@ def build_source_scope(
         return NotionSyncSourceScope(
             source_type="room",
             room_id=normalized_room_id,
+            trip_id=normalized_trip_id,
+            trip_title=normalized_trip_title,
         )
 
     if normalized_source_type == "user":
@@ -412,6 +438,8 @@ def build_source_scope(
         return NotionSyncSourceScope(
             source_type="user",
             user_id=normalized_user_id,
+            trip_id=normalized_trip_id,
+            trip_title=normalized_trip_title,
         )
 
     raise ValueError("source_type must be one of group, room, or user.")
@@ -425,6 +453,8 @@ def source_scope_from_candidate(
         group_id=candidate.group_id,
         room_id=candidate.room_id,
         user_id=candidate.user_id,
+        trip_id=candidate.trip_id,
+        trip_title=candidate.trip_title,
     )
 
 
@@ -437,12 +467,16 @@ def source_scope_to_fields(
             "group_id": None,
             "room_id": None,
             "user_id": None,
+            "trip_id": None,
+            "trip_title": None,
         }
     return {
         "source_type": source_scope.source_type,
         "group_id": source_scope.group_id,
         "room_id": source_scope.room_id,
         "user_id": source_scope.user_id,
+        "trip_id": source_scope.trip_id,
+        "trip_title": source_scope.trip_title,
     }
 
 
@@ -456,6 +490,7 @@ def _build_setup_target(
 ) -> NotionTargetConfig:
     normalized_parent_page_id = _normalize_optional(parent_page_id)
     normalized_data_source_id = _normalize_required(data_source_id)
+    preferred_title = source_scope.trip_title or default_title
 
     if normalized_data_source_id:
         if (
@@ -472,7 +507,7 @@ def _build_setup_target(
             database_title=(
                 existing_target.database_title if existing_target is not None else None
             )
-            or default_title,
+            or preferred_title,
         )
 
     if normalized_parent_page_id is not None:
@@ -488,7 +523,7 @@ def _build_setup_target(
             database_title=(
                 existing_target.database_title if existing_target is not None else None
             )
-            or default_title,
+            or preferred_title,
         )
 
     if existing_target is not None:
@@ -496,14 +531,17 @@ def _build_setup_target(
 
     return NotionTargetConfig.from_source_scope(
         source_scope,
-        database_title=default_title,
+        database_title=preferred_title,
     )
 
 
 def _build_source_scope_query(
     source_scope: NotionSyncSourceScope,
 ) -> dict[str, Any]:
-    query: dict[str, Any] = {"source_type": source_scope.source_type}
+    query: dict[str, Any] = {
+        "source_type": source_scope.source_type,
+        "trip_id": source_scope.trip_id,
+    }
     if source_scope.source_type == "group":
         query["group_id"] = source_scope.group_id
     elif source_scope.source_type == "room":

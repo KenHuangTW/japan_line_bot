@@ -57,14 +57,26 @@ async def trigger_notion_sync_run(
     source_scope: NotionSyncSourceScope | None = None,
 ) -> NotionSyncRunResponse:
     resolved_service = manager.resolve_service(source_scope)
-    if resolved_service is None or not resolved_service.service.is_sync_configured:
+    if not force and (
+        resolved_service is None or not resolved_service.service.is_sync_configured
+    ):
         raise RuntimeError("Notion sync is not configured.")
 
     if force:
         resolved_service = await manager.setup_database(
+            title=source_scope.trip_title if source_scope is not None else None,
             source_scope=(
-                source_scope if resolved_service.target_source == "scoped" else None
-            )
+                source_scope
+                if source_scope is not None
+                and (
+                    source_scope.trip_id is not None
+                    or (
+                        resolved_service is not None
+                        and resolved_service.target_source == "scoped"
+                    )
+                )
+                else None
+            ),
         )
         if resolved_service is None or not resolved_service.service.is_sync_configured:
             raise RuntimeError("Notion sync is not configured.")
@@ -170,6 +182,8 @@ def build_notion_sync_documents_response(
             group_id=item.group_id,
             room_id=item.room_id,
             user_id=item.user_id,
+            trip_id=item.trip_id,
+            trip_title=item.trip_title,
         )
         for item in repository.list_documents(
             limit=limit,

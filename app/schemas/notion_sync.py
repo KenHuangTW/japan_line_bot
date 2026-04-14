@@ -22,6 +22,14 @@ class NotionSourceScopeFields(BaseModel):
         default=None,
         description="當 source_type=user 時的 LINE user id。",
     )
+    trip_id: str | None = Field(
+        default=None,
+        description="旅次識別碼。",
+    )
+    trip_title: str | None = Field(
+        default=None,
+        description="旅次名稱。",
+    )
 
 
 class NotionSetupRequest(NotionSourceScopeFields):

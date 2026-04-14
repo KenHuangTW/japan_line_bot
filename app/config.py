@@ -58,11 +58,12 @@ class Settings(BaseModel):
     mongo_uri: str = "mongodb://127.0.0.1:27017"
     mongo_database: str = "nihon_line_bot"
     mongo_collection: str = "captured_lodging_links"
+    trip_collection: str = "line_trips"
     line_channel_secret: str = ""
     line_channel_access_token: str = ""
     line_reply_on_capture: bool = True
     line_welcome_message: str = (
-        "已加入群組。之後只要貼 Booking、Agoda 或 Airbnb 的住宿連結，我就會自動整理並同步到 Notion。"
+        "已加入群組。請先用 /建立旅次 <名稱> 建立目前旅次，再貼 Booking、Agoda 或 Airbnb 的住宿連結。"
     )
     reply_capture_template: str = "已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。"
     reply_duplicate_link_template: str = "你是不是在找這個\n{url}"
@@ -111,12 +112,13 @@ class Settings(BaseModel):
             mongo_collection=os.getenv(
                 "MONGO_COLLECTION", "captured_lodging_links"
             ),
+            trip_collection=os.getenv("TRIP_COLLECTION", "line_trips"),
             line_channel_secret=os.getenv("LINE_CHANNEL_SECRET", ""),
             line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
             line_reply_on_capture=_env_bool("LINE_REPLY_ON_CAPTURE", True),
             line_welcome_message=os.getenv(
                 "LINE_WELCOME_MESSAGE",
-                "已加入群組。之後只要貼 Booking、Agoda 或 Airbnb 的住宿連結，我就會自動整理並同步到 Notion。",
+                "已加入群組。請先用 /建立旅次 <名稱> 建立目前旅次，再貼 Booking、Agoda 或 Airbnb 的住宿連結。",
             ),
             reply_capture_template=os.getenv(
                 "REPLY_CAPTURE_TEMPLATE",

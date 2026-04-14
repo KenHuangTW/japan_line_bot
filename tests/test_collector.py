@@ -243,6 +243,31 @@ def test_mongo_captured_link_repository_matches_airbnb_duplicates_ignoring_www_a
     assert duplicate.url == "https://www.airbnb.com/rooms/123456789?check_in=2026-04-10"
 
 
+def test_mongo_captured_link_repository_isolates_duplicates_by_trip() -> None:
+    collection = FakeCollection()
+    repository = MongoCapturedLinkRepository(collection)
+    collection.documents.extend(
+        [
+            _sample_link("https://www.booking.com/hotel/jp/foo.html")
+            .model_copy(update={"trip_id": "trip-a", "trip_title": "Trip A"})
+            .model_dump(mode="python"),
+            _sample_link("https://www.booking.com/hotel/jp/foo.html")
+            .model_copy(update={"trip_id": "trip-b", "trip_title": "Trip B"})
+            .model_dump(mode="python"),
+        ]
+    )
+
+    duplicate = repository.find_duplicate(
+        ["https://www.booking.com/hotel/jp/foo.html"],
+        source_type="group",
+        trip_id="trip-b",
+        group_id="Cgroup123",
+    )
+
+    assert duplicate is not None
+    assert duplicate.trip_id == "trip-b"
+
+
 def test_create_collector_uses_mongo_backend() -> None:
     created_clients: list[FakeMongoClient] = []
 
