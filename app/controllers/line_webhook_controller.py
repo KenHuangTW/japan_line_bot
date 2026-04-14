@@ -5,6 +5,7 @@ import logging
 from app.config import Settings
 from app.controllers.integration.line_client import LineClient
 from app.controllers.repositories.captured_link_repository import CapturedLinkRepository
+from app.controllers.repositories.trip_repository import TripRepository
 from app.link_extractor import extract_lodging_links
 from app.lodging_links import LodgingLinkService
 from app.lodging_links.common import build_lodging_lookup_keys
@@ -14,7 +15,7 @@ from app.map_enrichment import (
     retry_all_map_enrichment_documents,
     run_map_enrichment_job,
 )
-from app.models import CapturedLodgingLink, LodgingLinkMatch
+from app.models import CapturedLodgingLink, LineTrip, LodgingLinkMatch
 from app.notion_sync import (
     NotionSyncRepository,
     NotionSyncSourceScope,
@@ -29,20 +30,35 @@ logger = logging.getLogger(__name__)
 
 HELP_COMMAND = "/help"
 PING_COMMAND = "/ping"
+TRIP_CREATE_COMMAND = "/建立旅次"
+TRIP_SWITCH_COMMAND = "/切換旅次"
+TRIP_CURRENT_COMMAND = "/目前旅次"
+TRIP_ARCHIVE_COMMAND = "/封存旅次"
 NOTION_LIST_COMMAND = "/清單"
 NOTION_SYNC_PENDING_COMMAND = "/整理"
 NOTION_SYNC_FORCE_COMMAND = "/全部重來"
+TRIP_FEATURE_UNAVAILABLE_MESSAGE = "旅次功能尚未設定完成。"
+TRIP_REQUIRED_MESSAGE = (
+    "目前沒有啟用中的旅次，請先用 /建立旅次 <名稱> 建立，或用 /切換旅次 <名稱> 切換。"
+)
+TRIP_CAPTURE_REQUIRED_MESSAGE = (
+    "請先建立或切換旅次，再貼住宿連結。用法：/建立旅次 <名稱> 或 /切換旅次 <名稱>"
+)
 LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (HELP_COMMAND, "顯示目前支援的指令與說明"),
     (PING_COMMAND, "回覆 pong"),
-    (NOTION_LIST_COMMAND, "直接回傳目前 Notion 住宿清單的連結"),
+    (TRIP_CREATE_COMMAND, "建立新旅次並切換為目前旅次，格式：/建立旅次 <名稱>"),
+    (TRIP_SWITCH_COMMAND, "切換到既有旅次，格式：/切換旅次 <名稱>"),
+    (TRIP_CURRENT_COMMAND, "查看目前啟用中的旅次"),
+    (TRIP_ARCHIVE_COMMAND, "封存目前旅次並清空 active trip"),
+    (NOTION_LIST_COMMAND, "直接回傳目前旅次的 Notion 住宿清單連結"),
     (
         NOTION_SYNC_PENDING_COMMAND,
-        "執行 Notion sync，只整理發出指令的那個聊天室中 pending / 尚未同步完成的資料",
+        "執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料",
     ),
     (
         NOTION_SYNC_FORCE_COMMAND,
-        "忽略既有同步狀態，只把發出指令的那個聊天室中的資料強制重新同步到 Notion",
+        "忽略既有同步狀態，只把目前旅次中的資料強制重新同步到 Notion",
     ),
 )
 
@@ -65,12 +81,13 @@ async def _handle_line_command(
     reply_token: str | None,
     settings: Settings,
     line_client: LineClient,
+    trip_repository: TripRepository | None,
     notion_sync_repository: NotionSyncRepository | None,
     notion_target_manager: NotionTargetManager,
     map_enrichment_repository: MapEnrichmentRepository | None,
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> bool:
-    command = text.strip()
+    command, argument = _split_command_text(text)
     if command == HELP_COMMAND:
         await _reply_if_possible(
             settings=settings,
@@ -89,52 +106,139 @@ async def _handle_line_command(
         )
         return True
 
-    if command == NOTION_LIST_COMMAND:
+    if command == TRIP_CREATE_COMMAND:
         await _reply_if_possible(
             settings=settings,
             line_client=line_client,
             reply_token=reply_token,
-            text=await _run_notion_list_command(
-                settings=settings,
-                target_manager=notion_target_manager,
-                source_scope=_build_source_scope(source),
+            text=_run_trip_create_command(
+                source=source,
+                title=argument,
+                trip_repository=trip_repository,
+            ),
+        )
+        return True
+
+    if command == TRIP_SWITCH_COMMAND:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=_run_trip_switch_command(
+                source=source,
+                title=argument,
+                trip_repository=trip_repository,
+            ),
+        )
+        return True
+
+    if command == TRIP_CURRENT_COMMAND:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=_run_trip_current_command(
+                source=source,
+                trip_repository=trip_repository,
+            ),
+        )
+        return True
+
+    if command == TRIP_ARCHIVE_COMMAND:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=_run_trip_archive_command(
+                source=source,
+                trip_repository=trip_repository,
+            ),
+        )
+        return True
+
+    if command == NOTION_LIST_COMMAND:
+        trip_scope, _, error_message = _resolve_active_trip_scope(
+            source=source,
+            trip_repository=trip_repository,
+            action_label="查詢目前旅次",
+        )
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=(
+                error_message
+                if error_message is not None
+                else await _run_notion_list_command(
+                    settings=settings,
+                    target_manager=notion_target_manager,
+                    source_scope=trip_scope,
+                )
             ),
         )
         return True
 
     if command == NOTION_SYNC_PENDING_COMMAND:
+        trip_scope, _, error_message = _resolve_active_trip_scope(
+            source=source,
+            trip_repository=trip_repository,
+            action_label="執行 Notion sync",
+        )
         await _reply_if_possible(
             settings=settings,
             line_client=line_client,
             reply_token=reply_token,
-            text=await _run_notion_sync_command(
-                repository=notion_sync_repository,
-                target_manager=notion_target_manager,
-                force=False,
-                source_scope=_build_source_scope(source),
-                map_enrichment_repository=map_enrichment_repository,
-                map_enrichment_service=map_enrichment_service,
+            text=(
+                error_message
+                if error_message is not None
+                else await _run_notion_sync_command(
+                    repository=notion_sync_repository,
+                    target_manager=notion_target_manager,
+                    force=False,
+                    source_scope=trip_scope,
+                    map_enrichment_repository=map_enrichment_repository,
+                    map_enrichment_service=map_enrichment_service,
+                )
             ),
         )
         return True
 
     if command == NOTION_SYNC_FORCE_COMMAND:
+        trip_scope, _, error_message = _resolve_active_trip_scope(
+            source=source,
+            trip_repository=trip_repository,
+            action_label="執行 Notion sync",
+        )
         await _reply_if_possible(
             settings=settings,
             line_client=line_client,
             reply_token=reply_token,
-            text=await _run_notion_sync_command(
-                repository=notion_sync_repository,
-                target_manager=notion_target_manager,
-                force=True,
-                source_scope=_build_source_scope(source),
-                map_enrichment_repository=map_enrichment_repository,
-                map_enrichment_service=map_enrichment_service,
+            text=(
+                error_message
+                if error_message is not None
+                else await _run_notion_sync_command(
+                    repository=notion_sync_repository,
+                    target_manager=notion_target_manager,
+                    force=True,
+                    source_scope=trip_scope,
+                    map_enrichment_repository=map_enrichment_repository,
+                    map_enrichment_service=map_enrichment_service,
+                )
             ),
         )
         return True
 
     return False
+
+
+def _split_command_text(text: str) -> tuple[str, str | None]:
+    parts = text.strip().split(maxsplit=1)
+    if not parts:
+        return "", None
+    if len(parts) == 1:
+        return parts[0], None
+    argument = parts[1].strip()
+    return parts[0], argument or None
 
 
 async def _reply_if_possible(
@@ -179,6 +283,149 @@ def _select_duplicate_reply_url(
     return duplicate.resolved_url or duplicate.url
 
 
+def _run_trip_create_command(
+    *,
+    source: LineEventSource,
+    title: str | None,
+    trip_repository: TripRepository | None,
+) -> str:
+    chat_scope, error_message = _resolve_chat_scope(
+        source=source,
+        action_label="建立旅次",
+    )
+    if error_message is not None:
+        return error_message
+    if trip_repository is None:
+        return TRIP_FEATURE_UNAVAILABLE_MESSAGE
+    if not title:
+        return f"請提供旅次名稱，格式：{TRIP_CREATE_COMMAND} <名稱>"
+
+    try:
+        existing_trip = trip_repository.find_open_trip_by_title(chat_scope, title)
+    except ValueError:
+        return f"請提供旅次名稱，格式：{TRIP_CREATE_COMMAND} <名稱>"
+
+    if existing_trip is not None:
+        if existing_trip.is_active:
+            return f"目前旅次已經是：{existing_trip.title}"
+        switched_trip = trip_repository.switch_active_trip(chat_scope, existing_trip.title)
+        if switched_trip is None:
+            return f"找不到旅次：{existing_trip.title}"
+        return f"旅次已存在，已切換到：{switched_trip.title}"
+
+    trip = trip_repository.create_trip(chat_scope, title)
+    return f"已建立並切換到旅次：{trip.title}"
+
+
+def _run_trip_switch_command(
+    *,
+    source: LineEventSource,
+    title: str | None,
+    trip_repository: TripRepository | None,
+) -> str:
+    chat_scope, error_message = _resolve_chat_scope(
+        source=source,
+        action_label="切換旅次",
+    )
+    if error_message is not None:
+        return error_message
+    if trip_repository is None:
+        return TRIP_FEATURE_UNAVAILABLE_MESSAGE
+    if not title:
+        return f"請提供旅次名稱，格式：{TRIP_SWITCH_COMMAND} <名稱>"
+
+    try:
+        trip = trip_repository.switch_active_trip(chat_scope, title)
+    except ValueError:
+        return f"請提供旅次名稱，格式：{TRIP_SWITCH_COMMAND} <名稱>"
+
+    if trip is None:
+        return f"找不到旅次：{title.strip()}"
+    return f"目前旅次已切換為：{trip.title}"
+
+
+def _run_trip_current_command(
+    *,
+    source: LineEventSource,
+    trip_repository: TripRepository | None,
+) -> str:
+    _, trip, error_message = _resolve_active_trip_scope(
+        source=source,
+        trip_repository=trip_repository,
+        action_label="查詢目前旅次",
+    )
+    if error_message is not None:
+        return error_message
+    assert trip is not None
+    return (
+        f"目前旅次：{trip.title}\n"
+        f"旅次 ID：{trip.trip_id}\n"
+        "狀態：進行中"
+    )
+
+
+def _run_trip_archive_command(
+    *,
+    source: LineEventSource,
+    trip_repository: TripRepository | None,
+) -> str:
+    chat_scope, error_message = _resolve_chat_scope(
+        source=source,
+        action_label="封存旅次",
+    )
+    if error_message is not None:
+        return error_message
+    if trip_repository is None:
+        return TRIP_FEATURE_UNAVAILABLE_MESSAGE
+    archived_trip = trip_repository.archive_active_trip(chat_scope)
+    if archived_trip is None:
+        return TRIP_REQUIRED_MESSAGE
+    return f"已封存旅次：{archived_trip.title}"
+
+
+def _resolve_chat_scope(
+    *,
+    source: LineEventSource,
+    action_label: str,
+) -> tuple[NotionSyncSourceScope | None, str | None]:
+    source_scope = _build_source_scope(source)
+    if source_scope is None:
+        return None, f"無法辨識目前聊天室，暫時無法{action_label}。"
+    return source_scope, None
+
+
+def _resolve_active_trip_scope(
+    *,
+    source: LineEventSource,
+    trip_repository: TripRepository | None,
+    action_label: str,
+) -> tuple[NotionSyncSourceScope | None, LineTrip | None, str | None]:
+    chat_scope, error_message = _resolve_chat_scope(
+        source=source,
+        action_label=action_label,
+    )
+    if error_message is not None:
+        return None, None, error_message
+    if trip_repository is None:
+        return None, None, TRIP_FEATURE_UNAVAILABLE_MESSAGE
+
+    active_trip = trip_repository.get_active_trip(chat_scope)
+    if active_trip is None:
+        return None, None, TRIP_REQUIRED_MESSAGE
+
+    trip_scope = build_source_scope(
+        source_type=active_trip.source_type,
+        group_id=active_trip.group_id,
+        room_id=active_trip.room_id,
+        user_id=active_trip.user_id,
+        trip_id=active_trip.trip_id,
+        trip_title=active_trip.title,
+    )
+    if trip_scope is None:
+        return None, None, f"無法辨識目前聊天室，暫時無法{action_label}。"
+    return trip_scope, active_trip, None
+
+
 async def _run_notion_sync_command(
     *,
     repository: NotionSyncRepository | None,
@@ -189,28 +436,33 @@ async def _run_notion_sync_command(
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> str:
     if source_scope is None:
-        return "無法辨識目前聊天室，暫時無法執行 Notion sync。"
+        return TRIP_REQUIRED_MESSAGE
 
     resolved_service = target_manager.resolve_service(source_scope)
-    if (
-        repository is None
-        or resolved_service is None
-        or not resolved_service.service.is_sync_configured
-    ):
+    if repository is None or target_manager.default_service is None:
         return "Notion sync 尚未設定完成。"
 
     try:
         if force:
             resolved_service = await target_manager.setup_database(
+                title=source_scope.trip_title,
                 source_scope=(
-                    source_scope if resolved_service.target_source == "scoped" else None
-                )
+                    source_scope
+                    if source_scope.trip_id is not None
+                    or (
+                        resolved_service is not None
+                        and resolved_service.target_source == "scoped"
+                    )
+                    else None
+                ),
             )
             if (
                 resolved_service is None
                 or not resolved_service.service.is_sync_configured
             ):
                 return "Notion sync 尚未設定完成。"
+        elif resolved_service is None or not resolved_service.service.is_sync_configured:
+            return "Notion sync 尚未設定完成。"
         await _run_lodging_enrichment_before_notion_sync(
             repository=map_enrichment_repository,
             service=map_enrichment_service,
@@ -262,16 +514,12 @@ async def _run_lodging_enrichment_before_notion_sync(
 
 async def _run_automatic_notion_sync_after_capture(
     *,
-    source: LineEventSource,
+    source_scope: NotionSyncSourceScope,
     notion_sync_repository: NotionSyncRepository | None,
     notion_target_manager: NotionTargetManager,
     map_enrichment_repository: MapEnrichmentRepository | None,
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> None:
-    source_scope = _build_source_scope(source)
-    if source_scope is None:
-        return
-
     resolved_service = notion_target_manager.resolve_service(source_scope)
     if notion_sync_repository is None or resolved_service is None:
         return
@@ -304,7 +552,12 @@ async def _run_notion_list_command(
     target_manager: NotionTargetManager,
     source_scope: NotionSyncSourceScope | None,
 ) -> str:
+    if source_scope is None:
+        return TRIP_REQUIRED_MESSAGE
+
     resolved_service = target_manager.resolve_service(source_scope)
+    if source_scope.trip_id and resolved_service is None:
+        return "目前旅次的 Notion 清單連結尚未設定完成。"
     notion_url: str | None = None
     if resolved_service is not None:
         if (
@@ -344,7 +597,18 @@ def _format_help_message() -> str:
         f"{command}：{description}"
         for command, description in LINE_COMMAND_DESCRIPTIONS
     ]
-    return "目前支援的指令：\n" + "\n".join(command_lines)
+    return (
+        "旅次模式操作：\n"
+        f"1. {TRIP_CREATE_COMMAND} 東京 2026\n"
+        "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
+        f"3. {NOTION_SYNC_PENDING_COMMAND} 同步目前旅次到 Notion\n"
+        f"4. {NOTION_LIST_COMMAND} 查看目前旅次清單\n"
+        "\n"
+        "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
+        "\n"
+        "指令列表：\n"
+        + "\n".join(command_lines)
+    )
 
 
 def _format_notion_sync_summary(
@@ -380,6 +644,7 @@ async def process_events(
     repository: CapturedLinkRepository,
     line_client: LineClient,
     lodging_link_service: LodgingLinkService,
+    trip_repository: TripRepository | None = None,
     notion_sync_repository: NotionSyncRepository | None = None,
     notion_target_manager: NotionTargetManager | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
@@ -410,6 +675,7 @@ async def process_events(
             reply_token=reply_token,
             settings=settings,
             line_client=line_client,
+            trip_repository=trip_repository,
             notion_sync_repository=notion_sync_repository,
             notion_target_manager=active_notion_target_manager,
             map_enrichment_repository=map_enrichment_repository,
@@ -423,6 +689,24 @@ async def process_events(
         )
         if not link_matches:
             continue
+
+        trip_scope, active_trip, trip_error_message = _resolve_active_trip_scope(
+            source=event.source,
+            trip_repository=trip_repository,
+            action_label="收錄住宿連結",
+        )
+        if trip_error_message is not None:
+            await _reply_if_possible(
+                settings=settings,
+                line_client=line_client,
+                reply_token=reply_token,
+                text=TRIP_CAPTURE_REQUIRED_MESSAGE
+                if trip_error_message == TRIP_REQUIRED_MESSAGE
+                else trip_error_message,
+            )
+            continue
+        assert trip_scope is not None
+        assert active_trip is not None
 
         records: list[CapturedLodgingLink] = []
         duplicate_reply_urls: list[str] = []
@@ -448,6 +732,7 @@ async def process_events(
             duplicate = repository.find_duplicate(
                 lookup_urls,
                 source_type=event.source.type,
+                trip_id=active_trip.trip_id,
                 group_id=event.source.groupId,
                 room_id=event.source.roomId,
                 user_id=event.source.userId,
@@ -472,6 +757,8 @@ async def process_events(
                     message_text=text,
                     source_type=event.source.type,
                     destination=payload.destination,
+                    trip_id=active_trip.trip_id,
+                    trip_title=active_trip.title,
                     group_id=event.source.groupId,
                     room_id=event.source.roomId,
                     user_id=event.source.userId,
@@ -487,7 +774,7 @@ async def process_events(
 
         if captured_count > 0:
             await _run_automatic_notion_sync_after_capture(
-                source=event.source,
+                source_scope=trip_scope,
                 notion_sync_repository=notion_sync_repository,
                 notion_target_manager=active_notion_target_manager,
                 map_enrichment_repository=map_enrichment_repository,

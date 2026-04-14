@@ -10,6 +10,7 @@ from app.controllers.line_webhook_controller import process_events
 from app.controllers.repositories.captured_link_repository import (
     CapturedLinkRepository,
 )
+from app.controllers.repositories.trip_repository import TripRepository
 from app.controllers.validators.line_webhook import (
     ensure_line_webhook_request_is_valid,
     parse_line_webhook_payload,
@@ -37,6 +38,10 @@ def _get_captured_link_repository(
 
 def _get_line_client(request: Request) -> LineClient:
     return cast(LineClient, request.app.state.line_client)
+
+
+def _get_trip_repository(request: Request) -> TripRepository | None:
+    return cast(TripRepository | None, request.app.state.trip_repository)
 
 
 def _get_lodging_link_service(request: Request) -> LodgingLinkService:
@@ -89,6 +94,7 @@ async def line_webhook(
         repository=_get_captured_link_repository(request),
         line_client=_get_line_client(request),
         lodging_link_service=_get_lodging_link_service(request),
+        trip_repository=_get_trip_repository(request),
         notion_sync_repository=_get_notion_sync_repository(request),
         notion_target_manager=_get_notion_target_manager(request),
         map_enrichment_repository=_get_map_enrichment_repository(request),

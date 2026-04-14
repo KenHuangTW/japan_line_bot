@@ -31,6 +31,8 @@ class NotionSyncSourceScope:
     group_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
+    trip_id: str | None = None
+    trip_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,8 @@ class NotionSyncCandidate:
     group_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
+    trip_id: str | None = None
+    trip_title: str | None = None
     notion_page_id: str | None = None
     notion_database_id: str | None = None
     notion_data_source_id: str | None = None
@@ -109,6 +113,8 @@ class NotionSyncDocument:
     group_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
+    trip_id: str | None = None
+    trip_title: str | None = None
     notion_database_id: str | None = None
     notion_data_source_id: str | None = None
 

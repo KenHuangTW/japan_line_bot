@@ -65,6 +65,8 @@ def _parse_source_scope(
     group_id: str | None,
     room_id: str | None,
     user_id: str | None,
+    trip_id: str | None = None,
+    trip_title: str | None = None,
 ):
     try:
         return build_source_scope(
@@ -72,6 +74,8 @@ def _parse_source_scope(
             group_id=group_id,
             room_id=room_id,
             user_id=user_id,
+            trip_id=trip_id,
+            trip_title=trip_title,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -102,6 +106,8 @@ async def create_notion_database(
         group_id=payload.group_id if payload else None,
         room_id=payload.room_id if payload else None,
         user_id=payload.user_id if payload else None,
+        trip_id=payload.trip_id if payload else None,
+        trip_title=payload.trip_title if payload else None,
     )
 
     try:
@@ -161,6 +167,8 @@ async def run_notion_sync(
         group_id=payload.group_id if payload else None,
         room_id=payload.room_id if payload else None,
         user_id=payload.user_id if payload else None,
+        trip_id=payload.trip_id if payload else None,
+        trip_title=payload.trip_title if payload else None,
     )
 
     try:
@@ -200,6 +208,7 @@ async def list_notion_sync_documents(
     group_id: str | None = Query(default=None),
     room_id: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
+    trip_id: str | None = Query(default=None),
 ) -> BaseResponse[NotionSyncDocumentsResponse]:
     repository = _get_notion_sync_repository(request)
     if repository is None:
@@ -213,6 +222,7 @@ async def list_notion_sync_documents(
         group_id=group_id,
         room_id=room_id,
         user_id=user_id,
+        trip_id=trip_id,
     )
 
     return BaseResponse(

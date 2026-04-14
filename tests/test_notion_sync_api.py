@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -14,6 +15,9 @@ from app.notion_sync.models import (
     NotionSyncSourceScope,
 )
 from app.notion_sync.targets import NotionTargetConfig
+
+DEFAULT_TRIP_ID = "trip-current"
+DEFAULT_TRIP_TITLE = "東京 2026"
 
 
 class DummyCollector:
@@ -165,6 +169,8 @@ class InMemoryNotionSyncRepository:
             group_id=current.group_id,
             room_id=current.room_id,
             user_id=current.user_id,
+            trip_id=current.trip_id,
+            trip_title=current.trip_title,
         )
 
     def mark_failed(self, document_id: str, error: str) -> None:
@@ -202,6 +208,8 @@ class InMemoryNotionSyncRepository:
             group_id=current.group_id,
             room_id=current.room_id,
             user_id=current.user_id,
+            trip_id=current.trip_id,
+            trip_title=current.trip_title,
         )
 
     def _to_candidate(self, item: NotionSyncDocument) -> NotionSyncCandidate:
@@ -232,6 +240,8 @@ class InMemoryNotionSyncRepository:
             group_id=item.group_id,
             room_id=item.room_id,
             user_id=item.user_id,
+            trip_id=item.trip_id,
+            trip_title=item.trip_title,
         )
 
 
@@ -328,7 +338,7 @@ class FakeNotionSyncService:
 
 class InMemoryNotionTargetRepository:
     def __init__(self) -> None:
-        self.targets: dict[tuple[str, str], NotionTargetConfig] = {}
+        self.targets: dict[tuple[str, str, str | None], NotionTargetConfig] = {}
 
     def find_by_source_scope(
         self,
@@ -503,6 +513,47 @@ def test_notion_setup_endpoint_can_store_scoped_target() -> None:
     assert stored_target.data_source_id == "ds-456"
 
 
+def test_notion_setup_endpoint_can_store_trip_scoped_target() -> None:
+    settings = Settings(
+        notion_api_token="secret",
+        notion_parent_page_id="page-parent",
+    )
+    repository = InMemoryNotionSyncRepository()
+    target_repository = InMemoryNotionTargetRepository()
+    service = FakeNotionSyncService(parent_page_id="")
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=DummyCollector(),
+            notion_sync_repository=repository,
+            notion_sync_service=service,
+            notion_target_repository=target_repository,
+        )
+    )
+
+    response = client.post(
+        "/jobs/notion-sync/setup",
+        json={
+            "title": DEFAULT_TRIP_TITLE,
+            "source_type": "group",
+            "group_id": "group-123",
+            "trip_id": DEFAULT_TRIP_ID,
+            "trip_title": DEFAULT_TRIP_TITLE,
+            "parent_page_id": "page-trip-123",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["target_source"] == "scoped"
+    assert body["data"]["trip_id"] == DEFAULT_TRIP_ID
+    assert body["data"]["trip_title"] == DEFAULT_TRIP_TITLE
+    stored_target = target_repository.find_by_source_scope(_trip_scope())
+    assert stored_target is not None
+    assert stored_target.parent_page_id == "page-trip-123"
+    assert stored_target.data_source_id == "ds-456"
+
+
 def test_notion_sync_run_endpoint_can_use_scoped_target() -> None:
     settings = Settings(
         notion_api_token="secret",
@@ -545,6 +596,63 @@ def test_notion_sync_run_endpoint_can_use_scoped_target() -> None:
     assert repository.documents["doc-failed"].notion_data_source_id == "ds-group-123"
 
 
+def test_notion_sync_run_endpoint_can_use_trip_scoped_target() -> None:
+    settings = Settings(
+        notion_api_token="secret",
+        notion_sync_batch_size=10,
+    )
+    repository = InMemoryNotionSyncRepository()
+    repository.documents["doc-pending"] = replace(
+        repository.documents["doc-pending"],
+        trip_id=DEFAULT_TRIP_ID,
+        trip_title=DEFAULT_TRIP_TITLE,
+    )
+    repository.documents["doc-failed"] = replace(
+        repository.documents["doc-failed"],
+        trip_id=DEFAULT_TRIP_ID,
+        trip_title=DEFAULT_TRIP_TITLE,
+    )
+    target_repository = InMemoryNotionTargetRepository()
+    target_repository.save(
+        NotionTargetConfig.from_source_scope(
+            _trip_scope(),
+            parent_page_id="page-trip-123",
+            database_id="db-trip-123",
+            data_source_id="ds-trip-123",
+            database_title=DEFAULT_TRIP_TITLE,
+            database_url="https://www.notion.so/workspace/db-trip-123?v=view-trip-123",
+            public_database_url="https://www.notion.so/public-db-trip-123",
+        )
+    )
+    service = FakeNotionSyncService(parent_page_id="")
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=DummyCollector(),
+            notion_sync_repository=repository,
+            notion_sync_service=service,
+            notion_target_repository=target_repository,
+        )
+    )
+
+    response = client.post(
+        "/jobs/notion-sync/run",
+        json={
+            "source_type": "group",
+            "group_id": "group-123",
+            "trip_id": DEFAULT_TRIP_ID,
+            "trip_title": DEFAULT_TRIP_TITLE,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["target_source"] == "scoped"
+    assert body["data"]["trip_id"] == DEFAULT_TRIP_ID
+    assert repository.documents["doc-pending"].notion_data_source_id == "ds-trip-123"
+    assert repository.documents["doc-failed"].notion_data_source_id == "ds-trip-123"
+
+
 def test_notion_sync_documents_endpoint_can_filter_by_scope() -> None:
     settings = Settings()
     repository = InMemoryNotionSyncRepository()
@@ -579,6 +687,8 @@ def _matches_source_scope(
         return True
     if item.source_type != source_scope.source_type:
         return False
+    if source_scope.trip_id is not None and item.trip_id != source_scope.trip_id:
+        return False
     if source_scope.source_type == "group":
         return item.group_id == source_scope.group_id
     if source_scope.source_type == "room":
@@ -588,9 +698,18 @@ def _matches_source_scope(
     return False
 
 
-def _scope_key(source_scope: NotionSyncSourceScope) -> tuple[str, str]:
+def _scope_key(source_scope: NotionSyncSourceScope) -> tuple[str, str, str | None]:
     if source_scope.source_type == "group":
-        return ("group", str(source_scope.group_id))
+        return ("group", str(source_scope.group_id), source_scope.trip_id)
     if source_scope.source_type == "room":
-        return ("room", str(source_scope.room_id))
-    return ("user", str(source_scope.user_id))
+        return ("room", str(source_scope.room_id), source_scope.trip_id)
+    return ("user", str(source_scope.user_id), source_scope.trip_id)
+
+
+def _trip_scope() -> NotionSyncSourceScope:
+    return NotionSyncSourceScope(
+        source_type="group",
+        group_id="group-123",
+        trip_id=DEFAULT_TRIP_ID,
+        trip_title=DEFAULT_TRIP_TITLE,
+    )

@@ -205,6 +205,8 @@ class MongoNotionSyncRepository:
                     group_id=item.get("group_id"),
                     room_id=item.get("room_id"),
                     user_id=item.get("user_id"),
+                    trip_id=item.get("trip_id"),
+                    trip_title=item.get("trip_title"),
                 )
             )
 
@@ -295,6 +297,8 @@ def _build_candidate(document: dict[str, Any]) -> NotionSyncCandidate:
         group_id=document.get("group_id"),
         room_id=document.get("room_id"),
         user_id=document.get("user_id"),
+        trip_id=document.get("trip_id"),
+        trip_title=document.get("trip_title"),
         notion_page_id=document.get("notion_page_id"),
         notion_database_id=document.get("notion_database_id"),
         notion_data_source_id=document.get("notion_data_source_id"),
@@ -343,6 +347,8 @@ def _apply_source_scope_query(
         source_query["room_id"] = source_scope.room_id
     elif source_scope.source_type == "user" and source_scope.user_id:
         source_query["user_id"] = source_scope.user_id
+    if source_scope.trip_id:
+        source_query["trip_id"] = source_scope.trip_id
 
     if not query:
         return source_query

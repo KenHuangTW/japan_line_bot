@@ -13,6 +13,7 @@ class CapturedLinkRepository(Protocol):
         urls: Sequence[str],
         *,
         source_type: str,
+        trip_id: str | None = None,
         group_id: str | None = None,
         room_id: str | None = None,
         user_id: str | None = None,

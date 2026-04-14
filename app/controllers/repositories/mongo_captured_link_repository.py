@@ -42,6 +42,7 @@ class MongoCapturedLinkRepository:
         urls: Sequence[str],
         *,
         source_type: str,
+        trip_id: str | None = None,
         group_id: str | None = None,
         room_id: str | None = None,
         user_id: str | None = None,
@@ -49,6 +50,7 @@ class MongoCapturedLinkRepository:
         query = _build_duplicate_query(
             urls=urls,
             source_type=source_type,
+            trip_id=trip_id,
             group_id=group_id,
             room_id=room_id,
             user_id=user_id,
@@ -74,6 +76,7 @@ def _build_duplicate_query(
     *,
     urls: Sequence[str],
     source_type: str,
+    trip_id: str | None,
     group_id: str | None,
     room_id: str | None,
     user_id: str | None,
@@ -98,6 +101,7 @@ def _build_duplicate_query(
         "$and": [
             _build_source_scope_query(
                 source_type=source_type,
+                trip_id=trip_id,
                 group_id=group_id,
                 room_id=room_id,
                 user_id=user_id,
@@ -122,11 +126,14 @@ def _build_short_link_duplicate_query(
 def _build_source_scope_query(
     *,
     source_type: str,
+    trip_id: str | None,
     group_id: str | None,
     room_id: str | None,
     user_id: str | None,
 ) -> dict[str, Any]:
     query: dict[str, Any] = {"source_type": source_type}
+    if trip_id:
+        query["trip_id"] = trip_id
 
     if source_type == "group":
         query["group_id"] = group_id
