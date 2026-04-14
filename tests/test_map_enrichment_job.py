@@ -87,6 +87,8 @@ def test_run_map_enrichment_job_marks_resolved_and_failed_documents() -> None:
         results={
             resolved_url: EnrichedLodgingMap(
                 property_name="Hotel Resol Ueno",
+                hero_image_url="https://cdn.example.com/hotels/resol.jpg",
+                line_hero_image_url="https://cdn.example.com/hotels/resol.jpg",
                 latitude=35.712345,
                 longitude=139.778901,
                 property_type="hotel",
@@ -119,6 +121,11 @@ def test_run_map_enrichment_job_marks_resolved_and_failed_documents() -> None:
     assert summary.pricing_resolved == 1
     assert summary.failed == 2
     assert repository.resolved["doc-1"].property_name == "Hotel Resol Ueno"
+    assert repository.resolved["doc-1"].hero_image_url == "https://cdn.example.com/hotels/resol.jpg"
+    assert (
+        repository.resolved["doc-1"].line_hero_image_url
+        == "https://cdn.example.com/hotels/resol.jpg"
+    )
     assert "doc-2" in repository.failed
     assert repository.failed["doc-3"] == "simulated fetch failure"
     assert service.calls == [resolved_url, address_only_url, failing_url]

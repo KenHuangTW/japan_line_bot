@@ -41,6 +41,8 @@ class InMemoryMapEnrichmentRepository:
                 pricing_status="resolved",
                 pricing_source="structured_data_offer",
                 property_name="Existing Hotel",
+                hero_image_url="https://cdn.example.com/existing-hotel.jpg",
+                line_hero_image_url="https://cdn.example.com/existing-hotel.jpg",
                 property_type="hotel",
                 amenities=("Free WiFi",),
                 price_amount=22000,
@@ -144,6 +146,8 @@ class InMemoryMapEnrichmentRepository:
             pricing_status="resolved" if enrichment.has_pricing else "partial",
             pricing_source=enrichment.pricing_source,
             property_name=enrichment.property_name,
+            hero_image_url=enrichment.hero_image_url,
+            line_hero_image_url=enrichment.line_hero_image_url,
             formatted_address=enrichment.formatted_address,
             street_address=enrichment.street_address,
             district=enrichment.district,
@@ -234,6 +238,8 @@ class FakeMapEnrichmentService:
         self.calls.append(url)
         return EnrichedLodgingMap(
             property_name="Hotel Resol Ueno",
+            hero_image_url="https://cdn.example.com/hotel-resol-ueno.jpg",
+            line_hero_image_url="https://cdn.example.com/hotel-resol-ueno.jpg",
             formatted_address="7-2-9 Ueno, Taito City, Tokyo, JP",
             street_address="7-2-9 Ueno",
             district="Taito City",
@@ -288,6 +294,10 @@ def test_map_enrichment_documents_endpoint_lists_mongo_like_documents() -> None:
     assert body["data"]["documents"][1]["details_status"] == "resolved"
     assert body["data"]["documents"][1]["pricing_status"] == "resolved"
     assert body["data"]["documents"][1]["amenities"] == ["Free WiFi"]
+    assert (
+        body["data"]["documents"][1]["line_hero_image_url"]
+        == "https://cdn.example.com/existing-hotel.jpg"
+    )
     assert body["data"]["documents"][1]["is_sold_out"] is False
     assert (
         body["data"]["documents"][1]["availability_source"]
@@ -337,6 +347,10 @@ def test_map_enrichment_run_endpoint_processes_pending_documents() -> None:
     assert pending_document["details_status"] == "resolved"
     assert pending_document["pricing_status"] == "resolved"
     assert pending_document["property_name"] == "Hotel Resol Ueno"
+    assert (
+        pending_document["line_hero_image_url"]
+        == "https://cdn.example.com/hotel-resol-ueno.jpg"
+    )
     assert pending_document["property_type"] == "hotel"
     assert pending_document["city"] == "Tokyo"
     assert pending_document["price_amount"] == 18000

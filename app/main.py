@@ -24,12 +24,14 @@ from app.notion_sync import (
     NotionTargetRepository,
     NotionSyncRepository,
 )
+from app.trip_display import MongoTripDisplayRepository, TripDisplayRepository
 from app.controllers.repositories import MongoTripRepository, TripRepository
 from app.routers import (
     health_router,
     line_webhook_router,
     map_enrichment_router,
     notion_sync_router,
+    trip_display_router,
 )
 
 
@@ -44,6 +46,7 @@ def create_app(
     notion_sync_service: NotionLodgingSyncService | None = None,
     notion_target_repository: NotionTargetRepository | None = None,
     trip_repository: TripRepository | None = None,
+    trip_display_repository: TripDisplayRepository | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.from_env()
     owned_resource = None
@@ -105,6 +108,15 @@ def create_app(
         )
     else:
         active_trip_repository = None
+    if trip_display_repository is not None:
+        active_trip_display_repository = trip_display_repository
+    elif hasattr(active_collector, "collection"):
+        active_trip_display_repository = MongoTripDisplayRepository(
+            active_collector.collection,
+            active_notion_target_repository,
+        )
+    else:
+        active_trip_display_repository = None
     active_notion_sync_service = notion_sync_service or (
         NotionLodgingSyncService(
             HttpNotionClient(
@@ -152,11 +164,13 @@ def create_app(
     app.state.notion_target_repository = active_notion_target_repository
     app.state.notion_target_manager = active_notion_target_manager
     app.state.trip_repository = active_trip_repository
+    app.state.trip_display_repository = active_trip_display_repository
 
     app.include_router(health_router)
     app.include_router(line_webhook_router)
     app.include_router(map_enrichment_router)
     app.include_router(notion_sync_router)
+    app.include_router(trip_display_router)
 
     return app
 

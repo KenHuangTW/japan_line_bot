@@ -19,6 +19,7 @@ from app.lodging_links import LodgingLinkService
 from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
 from app.notion_sync import NotionTargetManager, NotionSyncRepository
 from app.schemas.line_webhook import LineWebhookResponse
+from app.trip_display import TripDisplayRepository
 
 router = APIRouter()
 
@@ -42,6 +43,13 @@ def _get_line_client(request: Request) -> LineClient:
 
 def _get_trip_repository(request: Request) -> TripRepository | None:
     return cast(TripRepository | None, request.app.state.trip_repository)
+
+
+def _get_trip_display_repository(request: Request) -> TripDisplayRepository | None:
+    return cast(
+        TripDisplayRepository | None,
+        request.app.state.trip_display_repository,
+    )
 
 
 def _get_lodging_link_service(request: Request) -> LodgingLinkService:
@@ -95,9 +103,13 @@ async def line_webhook(
         line_client=_get_line_client(request),
         lodging_link_service=_get_lodging_link_service(request),
         trip_repository=_get_trip_repository(request),
+        trip_display_repository=_get_trip_display_repository(request),
         notion_sync_repository=_get_notion_sync_repository(request),
         notion_target_manager=_get_notion_target_manager(request),
         map_enrichment_repository=_get_map_enrichment_repository(request),
         map_enrichment_service=_get_map_enrichment_service(request),
+        trip_detail_url_builder=lambda display_token: str(
+            request.url_for("trip_detail", display_token=display_token)
+        ),
     )
     return LineWebhookResponse(ok=True, captured=captured)

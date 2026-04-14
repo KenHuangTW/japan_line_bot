@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from app.config import Settings
 from app.controllers.integration.line_client import LineClient
@@ -25,6 +27,12 @@ from app.notion_sync import (
     run_notion_sync_job,
 )
 from app.schemas.line_webhook import LineEventSource, LineWebhookRequest
+from app.trip_display import (
+    TripDisplayFilters,
+    TripDisplayRepository,
+    build_line_trip_flex_message,
+    build_line_trip_preview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +59,7 @@ LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (TRIP_SWITCH_COMMAND, "切換到既有旅次，格式：/切換旅次 <名稱>"),
     (TRIP_CURRENT_COMMAND, "查看目前啟用中的旅次"),
     (TRIP_ARCHIVE_COMMAND, "封存目前旅次並清空 active trip"),
-    (NOTION_LIST_COMMAND, "直接回傳目前旅次的 Notion 住宿清單連結"),
+    (NOTION_LIST_COMMAND, "回傳目前旅次的住宿 preview 與詳情頁連結"),
     (
         NOTION_SYNC_PENDING_COMMAND,
         "執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料",
@@ -74,6 +82,19 @@ async def _safe_reply(
         logger.exception("Failed to send LINE reply message.")
 
 
+async def _safe_reply_messages(
+    line_client: LineClient,
+    reply_token: str,
+    messages: list[dict[str, Any]],
+) -> bool:
+    try:
+        await line_client.reply_messages(reply_token, messages)
+        return True
+    except Exception:
+        logger.exception("Failed to send LINE reply messages.")
+        return False
+
+
 async def _handle_line_command(
     *,
     text: str,
@@ -82,6 +103,8 @@ async def _handle_line_command(
     settings: Settings,
     line_client: LineClient,
     trip_repository: TripRepository | None,
+    trip_display_repository: TripDisplayRepository | None,
+    trip_detail_url_builder: Callable[[str], str] | None,
     notion_sync_repository: NotionSyncRepository | None,
     notion_target_manager: NotionTargetManager,
     map_enrichment_repository: MapEnrichmentRepository | None,
@@ -157,25 +180,40 @@ async def _handle_line_command(
         return True
 
     if command == NOTION_LIST_COMMAND:
-        trip_scope, _, error_message = _resolve_active_trip_scope(
+        _, active_trip, error_message = _resolve_active_trip_scope(
             source=source,
             trip_repository=trip_repository,
             action_label="查詢目前旅次",
         )
-        await _reply_if_possible(
-            settings=settings,
-            line_client=line_client,
-            reply_token=reply_token,
-            text=(
-                error_message
-                if error_message is not None
-                else await _run_notion_list_command(
-                    settings=settings,
-                    target_manager=notion_target_manager,
-                    source_scope=trip_scope,
-                )
-            ),
+        if error_message is not None:
+            await _reply_if_possible(
+                settings=settings,
+                line_client=line_client,
+                reply_token=reply_token,
+                text=error_message,
+            )
+            return True
+
+        reply_messages, fallback_text = _build_trip_list_reply(
+            active_trip=active_trip,
+            trip_display_repository=trip_display_repository,
+            trip_detail_url_builder=trip_detail_url_builder,
         )
+        if reply_messages is not None:
+            await _reply_messages_if_possible(
+                settings=settings,
+                line_client=line_client,
+                reply_token=reply_token,
+                messages=reply_messages,
+                fallback_text=fallback_text,
+            )
+        else:
+            await _reply_if_possible(
+                settings=settings,
+                line_client=line_client,
+                reply_token=reply_token,
+                text=fallback_text,
+            )
         return True
 
     if command == NOTION_SYNC_PENDING_COMMAND:
@@ -250,6 +288,20 @@ async def _reply_if_possible(
 ) -> None:
     if reply_token and settings.line_channel_access_token:
         await _safe_reply(line_client, reply_token, text)
+
+
+async def _reply_messages_if_possible(
+    *,
+    settings: Settings,
+    line_client: LineClient,
+    reply_token: str | None,
+    messages: list[dict[str, Any]],
+    fallback_text: str | None = None,
+) -> None:
+    if reply_token and settings.line_channel_access_token:
+        sent = await _safe_reply_messages(line_client, reply_token, messages)
+        if not sent and fallback_text:
+            await _safe_reply(line_client, reply_token, fallback_text)
 
 
 def _build_duplicate_lookup_urls(match: LodgingLinkMatch) -> list[str]:
@@ -546,50 +598,31 @@ async def _run_automatic_notion_sync_after_capture(
         logger.exception("Failed to run automatic Notion sync after capture.")
 
 
-async def _run_notion_list_command(
+def _build_trip_list_reply(
     *,
-    settings: Settings,
-    target_manager: NotionTargetManager,
-    source_scope: NotionSyncSourceScope | None,
-) -> str:
-    if source_scope is None:
-        return TRIP_REQUIRED_MESSAGE
+    active_trip: LineTrip | None,
+    trip_display_repository: TripDisplayRepository | None,
+    trip_detail_url_builder: Callable[[str], str] | None,
+) -> tuple[list[dict[str, Any]] | None, str]:
+    if active_trip is None:
+        return None, TRIP_REQUIRED_MESSAGE
+    if trip_display_repository is None or trip_detail_url_builder is None:
+        return None, "旅次顯示頁尚未設定完成。"
 
-    resolved_service = target_manager.resolve_service(source_scope)
-    if source_scope.trip_id and resolved_service is None:
-        return "目前旅次的 Notion 清單連結尚未設定完成。"
-    notion_url: str | None = None
-    if resolved_service is not None:
-        if (
-            resolved_service.target_source == "scoped"
-            and resolved_service.target.share_url
-        ):
-            return str(resolved_service.target.share_url)
-        if resolved_service.target_source == "default":
-            notion_url = settings.notion_public_database_url.strip() or None
-            if notion_url:
-                return notion_url
-
-        service = resolved_service.service
-        try:
-            notion_url = await service.get_database_url(prefer_public=True)
-        except Exception:
-            logger.exception("Failed to resolve Notion database URL from LINE.")
-            notion_url = service.public_database_url or service.database_url or None
-
-        if resolved_service.target_source == "default" and service.public_database_url:
-            settings.notion_public_database_url = service.public_database_url
-        if resolved_service.target_source == "default" and service.database_url:
-            settings.notion_database_url = service.database_url
-
-    if not notion_url:
-        notion_url = settings.notion_public_database_url.strip() or None
-    if not notion_url:
-        notion_url = settings.notion_database_url.strip() or None
-
-    if not notion_url:
-        return "Notion 清單連結尚未設定完成。"
-    return notion_url
+    surface = trip_display_repository.build_trip_display(
+        active_trip,
+        TripDisplayFilters(),
+    )
+    detail_url = trip_detail_url_builder(active_trip.display_token)
+    return [
+        build_line_trip_flex_message(
+            surface,
+            detail_url=detail_url,
+        )
+    ], build_line_trip_preview(
+        surface,
+        detail_url=detail_url,
+    )
 
 
 def _format_help_message() -> str:
@@ -606,8 +639,8 @@ def _format_help_message() -> str:
         "\n"
         "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
         "\n"
-        "指令列表：\n"
-        + "\n".join(command_lines)
+                "指令列表：\n"
+                + "\n".join(command_lines)
     )
 
 
@@ -645,10 +678,12 @@ async def process_events(
     line_client: LineClient,
     lodging_link_service: LodgingLinkService,
     trip_repository: TripRepository | None = None,
+    trip_display_repository: TripDisplayRepository | None = None,
     notion_sync_repository: NotionSyncRepository | None = None,
     notion_target_manager: NotionTargetManager | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
+    trip_detail_url_builder: Callable[[str], str] | None = None,
 ) -> int:
     active_notion_target_manager = notion_target_manager or NotionTargetManager(None)
     captured_total = 0
@@ -676,6 +711,8 @@ async def process_events(
             settings=settings,
             line_client=line_client,
             trip_repository=trip_repository,
+            trip_display_repository=trip_display_repository,
+            trip_detail_url_builder=trip_detail_url_builder,
             notion_sync_repository=notion_sync_repository,
             notion_target_manager=active_notion_target_manager,
             map_enrichment_repository=map_enrichment_repository,

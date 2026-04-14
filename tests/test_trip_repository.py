@@ -62,6 +62,7 @@ def test_mongo_trip_repository_can_create_switch_and_archive_trips() -> None:
     archived_trip = repository.archive_active_trip(source_scope)
 
     assert first_trip.title == "東京 2026"
+    assert first_trip.display_token
     assert second_trip.title == "京都 2026"
     assert active_trip is not None
     assert active_trip.title == "京都 2026"
@@ -80,4 +81,33 @@ def test_mongo_trip_repository_can_create_switch_and_archive_trips() -> None:
         and item.get("status") == "archived"
         and isinstance(item.get("archived_at"), datetime)
         for item in collection.documents
+    )
+
+
+def test_mongo_trip_repository_can_backfill_and_lookup_display_token() -> None:
+    collection = FakeCollection()
+    collection.documents.append(
+        {
+            "trip_id": "trip-legacy",
+            "title": "大阪 2026",
+            "source_type": "group",
+            "group_id": "Cgroup123",
+            "status": "open",
+            "is_active": True,
+            "created_at": datetime(2026, 4, 1),
+            "updated_at": datetime(2026, 4, 1),
+        }
+    )
+    repository = MongoTripRepository(collection)
+    source_scope = NotionSyncSourceScope(source_type="group", group_id="Cgroup123")
+
+    active_trip = repository.get_active_trip(source_scope)
+
+    assert active_trip is not None
+    assert active_trip.display_token
+    stored_trip = collection.documents[0]
+    assert stored_trip["display_token"] == active_trip.display_token
+    assert (
+        repository.find_trip_by_display_token(active_trip.display_token).trip_id
+        == "trip-legacy"
     )

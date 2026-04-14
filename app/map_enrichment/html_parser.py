@@ -4,7 +4,7 @@ import json
 import re
 from html import unescape
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from app.lodging_links.airbnb import is_airbnb_hostname
 from app.map_enrichment.models import ParsedLodgingMap
@@ -15,6 +15,11 @@ JSON_LD_SCRIPT_PATTERN = re.compile(
 )
 TITLE_PATTERN = re.compile(
     r"<title[^>]*>(?P<title>.*?)</title>",
+    re.IGNORECASE | re.DOTALL,
+)
+META_TAG_PATTERN = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+META_ATTR_PATTERN = re.compile(
+    r'(?P<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?P<quote>"|\')(?P<value>.*?)(?P=quote)',
     re.IGNORECASE | re.DOTALL,
 )
 SCRIPT_STYLE_PATTERN = re.compile(
@@ -106,6 +111,22 @@ def parse_lodging_map_from_url(
         property_name=property_name,
         map_source=map_source,
     )
+
+
+def extract_lodging_hero_image_url(
+    html: str,
+    *,
+    base_url: str | None = None,
+) -> str | None:
+    meta_image_url = _extract_meta_image_url(html)
+    if meta_image_url is not None:
+        return _normalize_image_url(meta_image_url, base_url=base_url)
+
+    structured_image_url = _extract_structured_data_image_url(html)
+    if structured_image_url is not None:
+        return _normalize_image_url(structured_image_url, base_url=base_url)
+
+    return None
 
 
 def _extract_best_structured_data_candidate(html: str) -> ParsedLodgingMap | None:
@@ -280,6 +301,7 @@ def _candidate_from_node(node: dict[str, Any]) -> ParsedLodgingMap | None:
     property_name = _normalize_string(node.get("name")) or _normalize_string(
         node.get("headline")
     )
+    hero_image_url = _extract_image_url(node.get("image"))
     address_details = _extract_address_details(node.get("address"))
     formatted_address = _format_address(address_details)
     latitude = _parse_float(_extract_geo_value(node, "latitude"))
@@ -337,6 +359,7 @@ def _candidate_from_node(node: dict[str, Any]) -> ParsedLodgingMap | None:
 
     return ParsedLodgingMap(
         property_name=property_name,
+        hero_image_url=hero_image_url,
         formatted_address=formatted_address,
         street_address=address_details["street_address"],
         district=address_details["district"],
@@ -492,6 +515,83 @@ def _extract_property_type(raw_type: Any) -> str | None:
             property_type = _extract_property_type(item)
             if property_type is not None:
                 return property_type
+    return None
+
+
+def _extract_meta_image_url(html: str) -> str | None:
+    preferred_keys = (
+        "og:image",
+        "og:image:url",
+        "twitter:image",
+        "twitter:image:src",
+    )
+    for tag in META_TAG_PATTERN.findall(html):
+        attributes = {
+            match.group("name").strip().lower(): unescape(match.group("value")).strip()
+            for match in META_ATTR_PATTERN.finditer(tag)
+        }
+        key = attributes.get("property") or attributes.get("name")
+        if key is None or key.lower() not in preferred_keys:
+            continue
+        content = attributes.get("content")
+        if content:
+            return content
+    return None
+
+
+def _extract_structured_data_image_url(html: str) -> str | None:
+    best_candidate: tuple[int, str] | None = None
+    for script_body in JSON_LD_SCRIPT_PATTERN.findall(html):
+        payload = _load_json(script_body)
+        if payload is None:
+            continue
+        for node in _walk_nodes(payload):
+            image_url = _extract_image_url(node.get("image"))
+            if image_url is None:
+                continue
+            score = 0
+            if _is_lodging_type(node.get("@type")):
+                score += 4
+            if _normalize_string(node.get("name")):
+                score += 2
+            if isinstance(node.get("address"), (dict, str)):
+                score += 1
+            if best_candidate is None or score > best_candidate[0]:
+                best_candidate = (score, image_url)
+    if best_candidate is None:
+        return None
+    return best_candidate[1]
+
+
+def _extract_image_url(value: Any) -> str | None:
+    if isinstance(value, str):
+        return _normalize_string(value)
+    if isinstance(value, dict):
+        return (
+            _normalize_string(value.get("url"))
+            or _normalize_string(value.get("contentUrl"))
+            or _normalize_string(value.get("@id"))
+        )
+    if isinstance(value, list):
+        for item in value:
+            image_url = _extract_image_url(item)
+            if image_url is not None:
+                return image_url
+    return None
+
+
+def _normalize_image_url(value: str, *, base_url: str | None) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.startswith(("http://", "https://")):
+        return normalized
+    if normalized.startswith("//"):
+        return f"https:{normalized}"
+    if base_url is not None:
+        resolved = urljoin(base_url, normalized)
+        if resolved.startswith(("http://", "https://")):
+            return resolved
     return None
 
 
