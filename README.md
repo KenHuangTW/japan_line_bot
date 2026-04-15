@@ -19,6 +19,7 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - 支援 Agoda / Booking 分享短網址解析後再判斷是否為住宿頁。
 - 每個 LINE 聊天室都可以建立、切換、查詢與封存 active trip。
 - 同一聊天室內只在同一個旅次判定重複；不同旅次可保留相同房源。
+- 可選擇把旅次相關指令與住宿連結收錄從控制聊天室 A 代理到被控制聊天室 B，方便私下操作正式群組資料。
 - 提供 mobile-friendly 的只讀旅次頁，直接從 Mongo 顯示候選住宿，支援基本篩選與排序。
 - `/清單` 會回 LINE Flex carousel，每筆候選住宿一張卡片；若 Mongo 已存好 `line_hero_image_url`，會直接顯示 hero image，再引導到房源頁與旅次詳情頁。
 - 可選擇在成功收錄或發現重複連結時直接回覆 LINE。
@@ -121,6 +122,14 @@ Copy-Item .env.example .env
 - `LINE_CHANNEL_ACCESS_TOKEN`
 
 如果只想先測 webhook 收錄到 MongoDB，不做 Notion sync，Notion 相關設定可以先留空。
+
+如果你想在安靜的控制聊天室 A 私下操作另一個正式群組 B，可另外設定：
+
+- `LINE_COMMAND_CONTROL_SOURCE_GROUP_ID`
+- `LINE_COMMAND_CONTROL_TARGET_GROUP_ID`
+
+啟用後，`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理`、`/全部重來` 會改作用在 B 的 group scope；但你在 A 直接貼 Booking / Agoda / Airbnb 連結時，系統仍然只看 A 自己的 active trip，不會偷偷寫進 B。
+啟用後，`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理`、`/全部重來`，以及你在 A 貼出的 Booking / Agoda / Airbnb 住宿連結，都會改作用在 B 的 group scope。LINE 回覆仍然會回在 A，但 active trip、duplicate lookup、capture 儲存與後續 sync 都以 B 為準。
 
 ### 3. 啟動 MongoDB
 
@@ -231,11 +240,15 @@ curl http://127.0.0.1:8000/healthz
 | --- | --- | --- |
 | `LINE_CHANNEL_SECRET` | 空字串 | 驗證 `X-Line-Signature`。 |
 | `LINE_CHANNEL_ACCESS_TOKEN` | 空字串 | 發送 LINE reply message。留空時仍可收資料，但無法回覆。 |
+| `LINE_COMMAND_CONTROL_SOURCE_GROUP_ID` | 空字串 | 可選。控制聊天室 A 的 LINE `groupId`；當旅次相關指令或住宿連結從這個群組發出時，資料流程會改導向 target group。 |
+| `LINE_COMMAND_CONTROL_TARGET_GROUP_ID` | 空字串 | 可選。被控制聊天室 B 的 LINE `groupId`；需與 `LINE_COMMAND_CONTROL_SOURCE_GROUP_ID` 一起設定才會生效。 |
 | `LINE_REPLY_ON_CAPTURE` | `true` | 收錄成功時是否回覆「已收到 N 筆住宿連結」。 |
 | `LINE_WELCOME_MESSAGE` | `已加入群組。請先用 /建立旅次 <名稱> 建立目前旅次，再貼 Booking、Agoda 或 Airbnb 的住宿連結。` | bot 加入群組時的歡迎訊息。 |
 | `REPLY_CAPTURE_TEMPLATE` | `已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。` | 成功收錄回覆模板。 |
 | `REPLY_DUPLICATE_LINK_TEMPLATE` | `你是不是在找這個\n{url}` | 重複連結回覆模板。 |
 | `SUPPORTED_DOMAINS` | `booking.com,agoda.com,airbnb.com,airbnb.com.tw` | 允許擷取的 domain 清單，逗號分隔。 |
+
+`LINE_COMMAND_CONTROL_SOURCE_GROUP_ID` 與 `LINE_COMMAND_CONTROL_TARGET_GROUP_ID` 會同時影響旅次相關指令與住宿連結收錄範圍；但 LINE reply 仍然留在控制聊天室 A。
 
 ### 住宿 enrichment
 

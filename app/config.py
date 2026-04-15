@@ -61,6 +61,8 @@ class Settings(BaseModel):
     trip_collection: str = "line_trips"
     line_channel_secret: str = ""
     line_channel_access_token: str = ""
+    line_command_control_source_group_id: str = ""
+    line_command_control_target_group_id: str = ""
     line_reply_on_capture: bool = True
     line_welcome_message: str = (
         "已加入群組。請先用 /建立旅次 <名稱> 建立目前旅次，再貼 Booking、Agoda 或 Airbnb 的住宿連結。"
@@ -96,6 +98,46 @@ class Settings(BaseModel):
         )
 
     @property
+    def has_line_command_group_override(self) -> bool:
+        return bool(
+            self.line_command_control_source_group_id.strip()
+            and self.line_command_control_target_group_id.strip()
+        )
+
+    def resolve_line_target_source(
+        self,
+        *,
+        source_type: str,
+        group_id: str | None,
+        room_id: str | None,
+        user_id: str | None,
+    ) -> tuple[str, str | None, str | None, str | None]:
+        if not self.has_line_command_group_override:
+            return source_type, group_id, room_id, user_id
+
+        control_group_id = self.line_command_control_source_group_id.strip()
+        target_group_id = self.line_command_control_target_group_id.strip()
+        if source_type != "group" or group_id != control_group_id:
+            return source_type, group_id, room_id, user_id
+
+        return "group", target_group_id, None, user_id
+
+    def resolve_line_command_source(
+        self,
+        *,
+        source_type: str,
+        group_id: str | None,
+        room_id: str | None,
+        user_id: str | None,
+    ) -> tuple[str, str | None, str | None, str | None]:
+        return self.resolve_line_target_source(
+            source_type=source_type,
+            group_id=group_id,
+            room_id=room_id,
+            user_id=user_id,
+        )
+
+    @property
     def storage_target(self) -> str:
         return (
             f"{_redact_uri_password(self.mongo_uri)}/"
@@ -115,6 +157,12 @@ class Settings(BaseModel):
             trip_collection=os.getenv("TRIP_COLLECTION", "line_trips"),
             line_channel_secret=os.getenv("LINE_CHANNEL_SECRET", ""),
             line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
+            line_command_control_source_group_id=os.getenv(
+                "LINE_COMMAND_CONTROL_SOURCE_GROUP_ID", ""
+            ),
+            line_command_control_target_group_id=os.getenv(
+                "LINE_COMMAND_CONTROL_TARGET_GROUP_ID", ""
+            ),
             line_reply_on_capture=_env_bool("LINE_REPLY_ON_CAPTURE", True),
             line_welcome_message=os.getenv(
                 "LINE_WELCOME_MESSAGE",

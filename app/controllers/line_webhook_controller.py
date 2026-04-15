@@ -135,6 +135,7 @@ async def _handle_line_command(
             line_client=line_client,
             reply_token=reply_token,
             text=_run_trip_create_command(
+                settings=settings,
                 source=source,
                 title=argument,
                 trip_repository=trip_repository,
@@ -148,6 +149,7 @@ async def _handle_line_command(
             line_client=line_client,
             reply_token=reply_token,
             text=_run_trip_switch_command(
+                settings=settings,
                 source=source,
                 title=argument,
                 trip_repository=trip_repository,
@@ -161,6 +163,7 @@ async def _handle_line_command(
             line_client=line_client,
             reply_token=reply_token,
             text=_run_trip_current_command(
+                settings=settings,
                 source=source,
                 trip_repository=trip_repository,
             ),
@@ -173,6 +176,7 @@ async def _handle_line_command(
             line_client=line_client,
             reply_token=reply_token,
             text=_run_trip_archive_command(
+                settings=settings,
                 source=source,
                 trip_repository=trip_repository,
             ),
@@ -180,7 +184,8 @@ async def _handle_line_command(
         return True
 
     if command == NOTION_LIST_COMMAND:
-        _, active_trip, error_message = _resolve_active_trip_scope(
+        _, active_trip, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
             source=source,
             trip_repository=trip_repository,
             action_label="查詢目前旅次",
@@ -217,7 +222,8 @@ async def _handle_line_command(
         return True
 
     if command == NOTION_SYNC_PENDING_COMMAND:
-        trip_scope, _, error_message = _resolve_active_trip_scope(
+        trip_scope, _, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
             source=source,
             trip_repository=trip_repository,
             action_label="執行 Notion sync",
@@ -242,7 +248,8 @@ async def _handle_line_command(
         return True
 
     if command == NOTION_SYNC_FORCE_COMMAND:
-        trip_scope, _, error_message = _resolve_active_trip_scope(
+        trip_scope, _, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
             source=source,
             trip_repository=trip_repository,
             action_label="執行 Notion sync",
@@ -337,11 +344,13 @@ def _select_duplicate_reply_url(
 
 def _run_trip_create_command(
     *,
+    settings: Settings,
     source: LineEventSource,
     title: str | None,
     trip_repository: TripRepository | None,
 ) -> str:
-    chat_scope, error_message = _resolve_chat_scope(
+    chat_scope, error_message = _resolve_command_chat_scope(
+        settings=settings,
         source=source,
         action_label="建立旅次",
     )
@@ -371,11 +380,13 @@ def _run_trip_create_command(
 
 def _run_trip_switch_command(
     *,
+    settings: Settings,
     source: LineEventSource,
     title: str | None,
     trip_repository: TripRepository | None,
 ) -> str:
-    chat_scope, error_message = _resolve_chat_scope(
+    chat_scope, error_message = _resolve_command_chat_scope(
+        settings=settings,
         source=source,
         action_label="切換旅次",
     )
@@ -398,10 +409,12 @@ def _run_trip_switch_command(
 
 def _run_trip_current_command(
     *,
+    settings: Settings,
     source: LineEventSource,
     trip_repository: TripRepository | None,
 ) -> str:
-    _, trip, error_message = _resolve_active_trip_scope(
+    _, trip, error_message = _resolve_command_active_trip_scope(
+        settings=settings,
         source=source,
         trip_repository=trip_repository,
         action_label="查詢目前旅次",
@@ -418,10 +431,12 @@ def _run_trip_current_command(
 
 def _run_trip_archive_command(
     *,
+    settings: Settings,
     source: LineEventSource,
     trip_repository: TripRepository | None,
 ) -> str:
-    chat_scope, error_message = _resolve_chat_scope(
+    chat_scope, error_message = _resolve_command_chat_scope(
+        settings=settings,
         source=source,
         action_label="封存旅次",
     )
@@ -444,6 +459,18 @@ def _resolve_chat_scope(
     if source_scope is None:
         return None, f"無法辨識目前聊天室，暫時無法{action_label}。"
     return source_scope, None
+
+
+def _resolve_command_chat_scope(
+    *,
+    settings: Settings,
+    source: LineEventSource,
+    action_label: str,
+) -> tuple[NotionSyncSourceScope | None, str | None]:
+    return _resolve_chat_scope(
+        source=_resolve_target_source(settings=settings, source=source),
+        action_label=action_label,
+    )
 
 
 def _resolve_active_trip_scope(
@@ -476,6 +503,20 @@ def _resolve_active_trip_scope(
     if trip_scope is None:
         return None, None, f"無法辨識目前聊天室，暫時無法{action_label}。"
     return trip_scope, active_trip, None
+
+
+def _resolve_command_active_trip_scope(
+    *,
+    settings: Settings,
+    source: LineEventSource,
+    trip_repository: TripRepository | None,
+    action_label: str,
+) -> tuple[NotionSyncSourceScope | None, LineTrip | None, str | None]:
+    return _resolve_active_trip_scope(
+        source=_resolve_target_source(settings=settings, source=source),
+        trip_repository=trip_repository,
+        action_label=action_label,
+    )
 
 
 async def _run_notion_sync_command(
@@ -671,6 +712,38 @@ def _build_source_scope(source: LineEventSource) -> NotionSyncSourceScope | None
         return None
 
 
+def _resolve_target_source(
+    *,
+    settings: Settings,
+    source: LineEventSource,
+) -> LineEventSource:
+    (
+        source_type,
+        group_id,
+        room_id,
+        user_id,
+    ) = settings.resolve_line_target_source(
+        source_type=source.type,
+        group_id=source.groupId,
+        room_id=source.roomId,
+        user_id=source.userId,
+    )
+    if (
+        source_type == source.type
+        and group_id == source.groupId
+        and room_id == source.roomId
+        and user_id == source.userId
+    ):
+        return source
+
+    return LineEventSource(
+        type=source_type,
+        groupId=group_id,
+        roomId=room_id,
+        userId=user_id,
+    )
+
+
 async def process_events(
     payload: LineWebhookRequest,
     settings: Settings,
@@ -727,8 +800,9 @@ async def process_events(
         if not link_matches:
             continue
 
+        target_source = _resolve_target_source(settings=settings, source=event.source)
         trip_scope, active_trip, trip_error_message = _resolve_active_trip_scope(
-            source=event.source,
+            source=target_source,
             trip_repository=trip_repository,
             action_label="收錄住宿連結",
         )
@@ -768,11 +842,11 @@ async def process_events(
 
             duplicate = repository.find_duplicate(
                 lookup_urls,
-                source_type=event.source.type,
+                source_type=target_source.type,
                 trip_id=active_trip.trip_id,
-                group_id=event.source.groupId,
-                room_id=event.source.roomId,
-                user_id=event.source.userId,
+                group_id=target_source.groupId,
+                room_id=target_source.roomId,
+                user_id=target_source.userId,
             )
             if duplicate is not None:
                 reply_url = _select_duplicate_reply_url(
@@ -792,13 +866,13 @@ async def process_events(
                     resolved_url=link.resolved_url,
                     resolved_hostname=link.resolved_hostname,
                     message_text=text,
-                    source_type=event.source.type,
+                    source_type=target_source.type,
                     destination=payload.destination,
                     trip_id=active_trip.trip_id,
                     trip_title=active_trip.title,
-                    group_id=event.source.groupId,
-                    room_id=event.source.roomId,
-                    user_id=event.source.userId,
+                    group_id=target_source.groupId,
+                    room_id=target_source.roomId,
+                    user_id=target_source.userId,
                     message_id=event.message.id,
                     event_timestamp_ms=event.timestamp,
                     event_mode=event.mode,

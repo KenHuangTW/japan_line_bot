@@ -1462,6 +1462,128 @@ def test_line_webhook_does_not_auto_sync_duplicate_links() -> None:
     ]
 
 
+def test_line_webhook_control_group_auto_syncs_new_links_to_target_group() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    store = SharedCapturedDocumentStore()
+    repository = SharedCapturedLinkRepository(store)
+    map_enrichment_repository = SharedMapEnrichmentRepository(store)
+    notion_repository = SharedNotionSyncRepository(store)
+    notion_service = FakeNotionSyncService()
+    notion_target_repository = InMemoryNotionTargetRepository()
+    notion_target_repository.save(_build_trip_target(group_id="Ctarget123"))
+    url = "https://www.booking.com/hotel/jp/foo.html"
+    map_enrichment_service = FakeMapEnrichmentService(
+        {
+            url: EnrichedLodgingMap(
+                property_name="Foo Hotel",
+                latitude=35.1,
+                longitude=139.1,
+                map_source="structured_data_geo",
+                google_maps_url="https://maps.google.com/?q=35.1,139.1",
+            )
+        }
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            map_enrichment_repository=map_enrichment_repository,
+            map_enrichment_service=map_enrichment_service,
+            notion_sync_repository=notion_repository,
+            notion_sync_service=notion_service,
+            notion_target_repository=notion_target_repository,
+            trip_group_id="Ctarget123",
+        )
+    )
+
+    payload = _build_payload(url, group_id="Ccontrol123")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 1}
+    assert repository.items[0].group_id == "Ctarget123"
+    assert repository.items[0].property_name == "Foo Hotel"
+    assert repository.items[0].notion_sync_status == "synced"
+    assert map_enrichment_repository.pending_source_scopes == [
+        _build_trip_scope(group_id="Ctarget123")
+    ]
+    assert notion_repository.pending_source_scopes == [
+        _build_trip_scope(group_id="Ctarget123")
+    ]
+    assert notion_repository.synced == ["doc-1"]
+    assert notion_service.calls == ["doc-1"]
+    assert fake_line_client.calls == [
+        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+    ]
+
+
+def test_line_webhook_control_group_duplicate_lookup_uses_target_group_scope() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    repository.items.append(
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+            group_id="Ctarget123",
+        )
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_group_id="Ctarget123",
+        )
+    )
+
+    payload = _build_payload(
+        "https://www.booking.com/hotel/jp/foo.html",
+        group_id="Ccontrol123",
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert len(repository.items) == 1
+    assert fake_line_client.calls == [
+        ("reply-token", "你是不是在找這個\nhttps://www.booking.com/hotel/jp/foo.html")
+    ]
+
+
 def test_line_webhook_replies_pong_for_ping_command() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
@@ -1610,6 +1732,61 @@ def test_line_webhook_supports_trip_management_commands() -> None:
     ]
 
 
+def test_line_webhook_control_group_commands_manage_target_group_trip_state() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    trip_repository = InMemoryTripRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_repository=trip_repository,
+        )
+    )
+
+    for command in ("/建立旅次 東京 2026", "/目前旅次"):
+        payload = _build_payload(command, group_id="Ccontrol123")
+        body = json.dumps(payload).encode("utf-8")
+        signature = generate_signature(settings.line_channel_secret, body)
+        response = client.post(
+            "/webhooks/line",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Line-Signature": signature,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "captured": 0}
+
+    assert (
+        trip_repository.get_active_trip(
+            NotionSyncSourceScope(source_type="group", group_id="Ccontrol123")
+        )
+        is None
+    )
+    target_trip = trip_repository.get_active_trip(
+        NotionSyncSourceScope(source_type="group", group_id="Ctarget123")
+    )
+    assert target_trip is not None
+    assert target_trip.title == "東京 2026"
+    assert fake_line_client.calls == [
+        ("reply-token", "已建立並切換到旅次：東京 2026"),
+        (
+            "reply-token",
+            "目前旅次：東京 2026\n旅次 ID：trip-1\n狀態：進行中",
+        ),
+    ]
+
+
 def test_line_webhook_blocks_capture_without_active_trip() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
@@ -1644,6 +1821,274 @@ def test_line_webhook_blocks_capture_without_active_trip() -> None:
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
     assert fake_line_client.calls == [("reply-token", "請先建立或切換旅次，再貼住宿連結。用法：/建立旅次 <名稱> 或 /切換旅次 <名稱>")]
+
+
+def test_line_webhook_control_group_capture_writes_into_target_group() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    trip_repository = InMemoryTripRepository(
+        [
+            _build_trip(
+                trip_id="trip-control",
+                title="Control Trip",
+                group_id="Ccontrol123",
+            ),
+            _build_trip(
+                trip_id="trip-target",
+                title="Target Trip",
+                group_id="Ctarget123",
+            ),
+        ]
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_repository=trip_repository,
+        )
+    )
+
+    payload = _build_payload(
+        "https://www.booking.com/hotel/jp/foo.html",
+        group_id="Ccontrol123",
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 1}
+    assert len(repository.items) == 1
+    captured = repository.items[0]
+    assert captured.group_id == "Ctarget123"
+    assert captured.trip_id == "trip-target"
+    assert captured.trip_title == "Target Trip"
+    assert fake_line_client.calls == [("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")]
+
+
+def test_line_webhook_control_group_capture_requires_target_group_active_trip() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    trip_repository = InMemoryTripRepository(
+        [
+            _build_trip(
+                trip_id="trip-control",
+                title="Control Trip",
+                group_id="Ccontrol123",
+            )
+        ]
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_repository=trip_repository,
+        )
+    )
+
+    payload = _build_payload(
+        "https://www.booking.com/hotel/jp/foo.html",
+        group_id="Ccontrol123",
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert repository.items == []
+    assert fake_line_client.calls == [
+        ("reply-token", "請先建立或切換旅次，再貼住宿連結。用法：/建立旅次 <名稱> 或 /切換旅次 <名稱>")
+    ]
+
+
+def test_line_webhook_control_group_capture_falls_back_when_override_is_partial() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    trip_repository = InMemoryTripRepository(
+        [
+            _build_trip(
+                trip_id="trip-control",
+                title="Control Trip",
+                group_id="Ccontrol123",
+            )
+        ]
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_repository=trip_repository,
+        )
+    )
+
+    payload = _build_payload(
+        "https://www.booking.com/hotel/jp/foo.html",
+        group_id="Ccontrol123",
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 1}
+    assert len(repository.items) == 1
+    assert repository.items[0].group_id == "Ccontrol123"
+    assert repository.items[0].trip_id == "trip-control"
+    assert fake_line_client.calls == [
+        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+    ]
+
+
+def test_line_webhook_control_group_capture_falls_back_for_unmatched_group() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    trip_repository = InMemoryTripRepository(
+        [
+            _build_trip(
+                trip_id="trip-other",
+                title="Other Trip",
+                group_id="Cother123",
+            )
+        ]
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_repository=trip_repository,
+        )
+    )
+
+    payload = _build_payload(
+        "https://www.booking.com/hotel/jp/foo.html",
+        group_id="Cother123",
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 1}
+    assert len(repository.items) == 1
+    assert repository.items[0].group_id == "Cother123"
+    assert repository.items[0].trip_id == "trip-other"
+    assert fake_line_client.calls == [
+        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+    ]
+
+
+def test_line_webhook_control_group_capture_falls_back_for_non_group_source() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_source_type="room",
+            trip_group_id=None,
+            trip_room_id="Rroom123",
+        )
+    )
+
+    payload = _build_payload(
+        "https://www.booking.com/hotel/jp/foo.html",
+        source_type="room",
+        group_id=None,
+        room_id="Rroom123",
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 1}
+    assert len(repository.items) == 1
+    assert repository.items[0].group_id is None
+    assert repository.items[0].room_id == "Rroom123"
+    assert repository.items[0].trip_id == DEFAULT_TRIP_ID
+    assert fake_line_client.calls == [
+        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+    ]
 
 
 def test_line_webhook_replies_trip_preview_for_list_command() -> None:
@@ -1735,6 +2180,79 @@ def test_line_webhook_replies_trip_preview_for_list_command() -> None:
     assert first_footer[0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
     assert first_footer[1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
     assert len(first_footer) == 2
+
+
+def test_line_webhook_control_group_list_command_reads_target_group_trip() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    display_items = [
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+            group_id="Ctarget123",
+            captured_at=datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc),
+        ).model_copy(
+            update={
+                "property_name": "Foo Hotel",
+                "hero_image_url": "https://cdn.example.com/foo.jpg",
+                "line_hero_image_url": "https://cdn.example.com/foo.jpg",
+                "formatted_address": "東京新宿區",
+                "price_amount": 4200,
+                "price_currency": "TWD",
+                "is_sold_out": False,
+            }
+        )
+    ]
+    notion_target_repository = InMemoryNotionTargetRepository()
+    notion_target_repository.save(
+        _build_trip_target(
+            group_id="Ctarget123",
+            public_database_url="https://www.notion.so/public-target-trip",
+            database_url="https://www.notion.so/workspace/Trip-Lodgings-target?v=view-target",
+        )
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_display_repository=_build_trip_display_repository(
+                display_items,
+                notion_target_repository=notion_target_repository,
+            ),
+            notion_target_repository=notion_target_repository,
+            trip_group_id="Ctarget123",
+        )
+    )
+
+    payload = _build_payload("/清單", group_id="Ccontrol123")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert fake_line_client.calls == []
+    reply_token, messages = _single_message_call(fake_line_client)
+    assert reply_token == "reply-token"
+    flex = messages[0]
+    bubble = flex["contents"]["contents"][0]
+    assert bubble["body"]["contents"][0]["text"] == "Foo Hotel"
+    assert bubble["footer"]["contents"][1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
 
 
 def test_line_webhook_list_command_works_without_notion_target() -> None:
@@ -2031,6 +2549,96 @@ def test_line_webhook_runs_pending_notion_sync_command() -> None:
     ]
 
 
+def test_line_webhook_control_group_runs_pending_notion_sync_for_target_group() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    notion_repository = InMemoryNotionSyncRepository(
+        pending_items=[
+            _build_notion_candidate("doc-1", group_id="Ctarget123"),
+            _build_notion_candidate("doc-2", group_id="Ctarget123"),
+            _build_notion_candidate("doc-control", group_id="Ccontrol123"),
+        ]
+    )
+    notion_service = FakeNotionSyncService()
+    notion_target_repository = InMemoryNotionTargetRepository()
+    notion_target_repository.save(_build_trip_target(group_id="Ctarget123"))
+    map_enrichment_repository = InMemoryMapEnrichmentRepository(
+        pending_items=[
+            MapEnrichmentCandidate(
+                "doc-1",
+                "https://short.example/doc-1",
+                "https://www.booking.com/hotel/jp/doc-1.html",
+            ),
+            MapEnrichmentCandidate(
+                "doc-2",
+                "https://www.agoda.com/doc-2.html",
+            ),
+        ]
+    )
+    map_enrichment_service = FakeMapEnrichmentService(
+        {
+            "https://www.booking.com/hotel/jp/doc-1.html": EnrichedLodgingMap(
+                property_name="Doc 1 Hotel",
+                latitude=35.1,
+                longitude=139.1,
+                map_source="structured_data_geo",
+            ),
+            "https://www.agoda.com/doc-2.html": EnrichedLodgingMap(
+                property_name="Doc 2 Hotel",
+                latitude=35.2,
+                longitude=139.2,
+                map_source="structured_data_geo",
+            ),
+        }
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            map_enrichment_repository=map_enrichment_repository,
+            map_enrichment_service=map_enrichment_service,
+            notion_sync_repository=notion_repository,
+            notion_sync_service=notion_service,
+            notion_target_repository=notion_target_repository,
+            trip_group_id="Ctarget123",
+        )
+    )
+
+    payload = _build_payload("/整理", group_id="Ccontrol123")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert map_enrichment_repository.pending_source_scopes == [
+        _build_trip_scope(group_id="Ctarget123")
+    ]
+    assert notion_repository.pending_source_scopes == [
+        _build_trip_scope(group_id="Ctarget123")
+    ]
+    assert notion_service.calls == ["doc-1", "doc-2"]
+    assert fake_line_client.calls == [
+        ("reply-token", "Notion 整理完成：處理 2 筆，新增 2 筆，更新 0 筆，失敗 0 筆。")
+    ]
+
+
 def test_line_webhook_runs_pending_notion_sync_command_with_scoped_target() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
@@ -2245,6 +2853,101 @@ def test_line_webhook_runs_force_notion_sync_command() -> None:
             group_id=None,
             room_id="Rroom123",
         )
+    ]
+    assert notion_service.setup_calls == [DEFAULT_TRIP_TITLE]
+    assert notion_service.calls == ["doc-1", "doc-2"]
+    assert fake_line_client.calls == [
+        ("reply-token", "Notion 全部重來完成：處理 2 筆，新增 1 筆，更新 1 筆，失敗 0 筆。")
+    ]
+
+
+def test_line_webhook_control_group_runs_force_notion_sync_for_target_group() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+        line_command_control_source_group_id="Ccontrol123",
+        line_command_control_target_group_id="Ctarget123",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    notion_target_repository = InMemoryNotionTargetRepository()
+    notion_repository = InMemoryNotionSyncRepository(
+        all_items=[
+            _build_notion_candidate(
+                "doc-1",
+                group_id="Ctarget123",
+                notion_page_id="page-doc-1",
+                notion_data_source_id="ds-current",
+            ),
+            _build_notion_candidate("doc-2", group_id="Ctarget123"),
+            _build_notion_candidate("doc-control", group_id="Ccontrol123"),
+        ]
+    )
+    notion_service = FakeNotionSyncService()
+    map_enrichment_repository = InMemoryMapEnrichmentRepository(
+        all_items=[
+            MapEnrichmentCandidate(
+                "doc-1",
+                "https://short.example/doc-1",
+                "https://www.booking.com/hotel/jp/doc-1.html",
+            ),
+            MapEnrichmentCandidate(
+                "doc-2",
+                "https://www.agoda.com/doc-2.html",
+            ),
+        ]
+    )
+    map_enrichment_service = FakeMapEnrichmentService(
+        {
+            "https://www.booking.com/hotel/jp/doc-1.html": EnrichedLodgingMap(
+                property_name="Doc 1 Hotel",
+                latitude=35.1,
+                longitude=139.1,
+                map_source="structured_data_geo",
+            ),
+            "https://www.agoda.com/doc-2.html": EnrichedLodgingMap(
+                property_name="Doc 2 Hotel",
+                latitude=35.2,
+                longitude=139.2,
+                map_source="structured_data_geo",
+            ),
+        }
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            map_enrichment_repository=map_enrichment_repository,
+            map_enrichment_service=map_enrichment_service,
+            notion_sync_repository=notion_repository,
+            notion_sync_service=notion_service,
+            notion_target_repository=notion_target_repository,
+            trip_group_id="Ctarget123",
+        )
+    )
+
+    payload = _build_payload("/全部重來", group_id="Ccontrol123")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert map_enrichment_repository.all_source_scopes == [
+        _build_trip_scope(group_id="Ctarget123")
+    ]
+    assert notion_repository.all_source_scopes == [
+        _build_trip_scope(group_id="Ctarget123")
     ]
     assert notion_service.setup_calls == [DEFAULT_TRIP_TITLE]
     assert notion_service.calls == ["doc-1", "doc-2"]
