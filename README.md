@@ -30,6 +30,7 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - 提供 shell / PowerShell 腳本協助啟動 MongoDB、服務與測試。
 
 旅次顯示層與 AI 摘要的操作說明，請參考 [docs/trip-display-surface.md](docs/trip-display-surface.md) 與 [docs/lodging-decision-summary.md](docs/lodging-decision-summary.md)。
+AI workflow skill 的共用版與 local overlay 規則，請參考 [docs/ai-skills.md](docs/ai-skills.md)。
 
 ## 資料流程
 
@@ -68,6 +69,8 @@ app/
   main.py              FastAPI app 組裝入口
 tests/                 單元測試與 API / webhook 測試
 docs/                  操作說明與產品行為文件
+.codex/skills/         Codex 共用 workflow skills；本機 override 請用 *.local
+.windsurf/             Windsurf 共用 skills / workflows；本機 override 請用 *.local
 Dockerfile             單容器部署設定
 docker-compose.yml     server + MongoDB 本機整套啟動
 start.sh / start.ps1   啟動 FastAPI
