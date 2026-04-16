@@ -7,6 +7,11 @@ from fastapi import FastAPI
 from app.collector import Collector, create_collector
 from app.config import Settings
 from app.line_client import HttpLineClient, LineClient, NoopLineClient
+from app.lodging_summary import (
+    DecisionSummaryService,
+    GeminiDecisionSummaryClient,
+    LodgingDecisionSummaryService,
+)
 from app.lodging_links import HttpLodgingUrlResolver, LodgingLinkService
 from app.map_enrichment import (
     BankOfTaiwanTwdPriceConverter,
@@ -47,6 +52,7 @@ def create_app(
     notion_target_repository: NotionTargetRepository | None = None,
     trip_repository: TripRepository | None = None,
     trip_display_repository: TripDisplayRepository | None = None,
+    decision_summary_service: DecisionSummaryService | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.from_env()
     owned_resource = None
@@ -117,6 +123,22 @@ def create_app(
         )
     else:
         active_trip_display_repository = None
+    if decision_summary_service is not None:
+        active_decision_summary_service = decision_summary_service
+    elif (
+        active_settings.is_gemini_configured
+        and active_trip_display_repository is not None
+    ):
+        active_decision_summary_service = LodgingDecisionSummaryService(
+            active_trip_display_repository,
+            GeminiDecisionSummaryClient(
+                active_settings.gemini_api_key,
+                model=active_settings.gemini_model,
+                timeout=active_settings.gemini_request_timeout,
+            ),
+        )
+    else:
+        active_decision_summary_service = None
     active_notion_sync_service = notion_sync_service or (
         NotionLodgingSyncService(
             HttpNotionClient(
@@ -165,6 +187,7 @@ def create_app(
     app.state.notion_target_manager = active_notion_target_manager
     app.state.trip_repository = active_trip_repository
     app.state.trip_display_repository = active_trip_display_repository
+    app.state.decision_summary_service = active_decision_summary_service
 
     app.include_router(health_router)
     app.include_router(line_webhook_router)

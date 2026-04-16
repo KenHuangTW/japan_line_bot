@@ -27,12 +27,14 @@ class TripDisplayLodging:
     url: str
     resolved_url: str | None = None
     property_name: str | None = None
+    city: str | None = None
     hero_image_url: str | None = None
     line_hero_image_url: str | None = None
     formatted_address: str | None = None
     price_amount: float | None = None
     price_currency: str | None = None
     is_sold_out: bool | None = None
+    amenities: tuple[str, ...] = ()
     google_maps_url: str | None = None
     google_maps_search_url: str | None = None
     notion_page_url: str | None = None
@@ -120,7 +122,9 @@ class TripDisplaySurface:
                 {
                     "document_id": lodging.document_id,
                     "platform": lodging.platform,
+                    "property_name": lodging.property_name,
                     "display_name": lodging.display_name,
+                    "city": lodging.city,
                     "hero_image_url": lodging.hero_image_url,
                     "line_hero_image_url": lodging.line_hero_image_url,
                     "target_url": lodging.target_url,
@@ -128,6 +132,8 @@ class TripDisplaySurface:
                     "price_amount": lodging.price_amount,
                     "price_currency": lodging.price_currency,
                     "availability": lodging.availability_key,
+                    "is_sold_out": lodging.is_sold_out,
+                    "amenities": list(lodging.amenities),
                     "maps_url": lodging.maps_url,
                     "notion_page_url": lodging.notion_page_url,
                     "captured_at": (

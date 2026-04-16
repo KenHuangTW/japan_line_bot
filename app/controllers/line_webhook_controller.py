@@ -9,6 +9,13 @@ from app.controllers.integration.line_client import LineClient
 from app.controllers.repositories.captured_link_repository import CapturedLinkRepository
 from app.controllers.repositories.trip_repository import TripRepository
 from app.link_extractor import extract_lodging_links
+from app.lodging_summary import (
+    DecisionSummaryService,
+    LodgingDecisionSummaryConfigurationError,
+    LodgingDecisionSummaryEmptyTripError,
+    LodgingDecisionSummaryError,
+    build_line_lodging_decision_summary,
+)
 from app.lodging_links import LodgingLinkService
 from app.lodging_links.common import build_lodging_lookup_keys
 from app.map_enrichment import (
@@ -43,6 +50,7 @@ TRIP_SWITCH_COMMAND = "/切換旅次"
 TRIP_CURRENT_COMMAND = "/目前旅次"
 TRIP_ARCHIVE_COMMAND = "/封存旅次"
 NOTION_LIST_COMMAND = "/清單"
+SUMMARY_COMMAND = "/摘要"
 NOTION_SYNC_PENDING_COMMAND = "/整理"
 NOTION_SYNC_FORCE_COMMAND = "/全部重來"
 TRIP_FEATURE_UNAVAILABLE_MESSAGE = "旅次功能尚未設定完成。"
@@ -52,6 +60,9 @@ TRIP_REQUIRED_MESSAGE = (
 TRIP_CAPTURE_REQUIRED_MESSAGE = (
     "請先建立或切換旅次，再貼住宿連結。用法：/建立旅次 <名稱> 或 /切換旅次 <名稱>"
 )
+SUMMARY_FEATURE_UNAVAILABLE_MESSAGE = "AI 摘要尚未設定完成。"
+SUMMARY_EMPTY_TRIP_MESSAGE = "目前旅次還沒有住宿資料可摘要，請先貼住宿連結。"
+SUMMARY_FAILED_MESSAGE = "目前無法產生住宿摘要，請稍後再試。"
 LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (HELP_COMMAND, "顯示目前支援的指令與說明"),
     (PING_COMMAND, "回覆 pong"),
@@ -60,6 +71,7 @@ LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (TRIP_CURRENT_COMMAND, "查看目前啟用中的旅次"),
     (TRIP_ARCHIVE_COMMAND, "封存目前旅次並清空 active trip"),
     (NOTION_LIST_COMMAND, "回傳目前旅次的住宿 preview 與詳情頁連結"),
+    (SUMMARY_COMMAND, "產生目前旅次的 AI 決策摘要"),
     (
         NOTION_SYNC_PENDING_COMMAND,
         "執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料",
@@ -104,6 +116,7 @@ async def _handle_line_command(
     line_client: LineClient,
     trip_repository: TripRepository | None,
     trip_display_repository: TripDisplayRepository | None,
+    decision_summary_service: DecisionSummaryService | None,
     trip_detail_url_builder: Callable[[str], str] | None,
     notion_sync_repository: NotionSyncRepository | None,
     notion_target_manager: NotionTargetManager,
@@ -219,6 +232,28 @@ async def _handle_line_command(
                 reply_token=reply_token,
                 text=fallback_text,
             )
+        return True
+
+    if command == SUMMARY_COMMAND:
+        _, active_trip, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
+            source=source,
+            trip_repository=trip_repository,
+            action_label="產生旅次摘要",
+        )
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=(
+                error_message
+                if error_message is not None
+                else await _run_decision_summary_command(
+                    active_trip=active_trip,
+                    decision_summary_service=decision_summary_service,
+                )
+            ),
+        )
         return True
 
     if command == NOTION_SYNC_PENDING_COMMAND:
@@ -677,12 +712,43 @@ def _format_help_message() -> str:
         "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
         f"3. {NOTION_SYNC_PENDING_COMMAND} 同步目前旅次到 Notion\n"
         f"4. {NOTION_LIST_COMMAND} 查看目前旅次清單\n"
+        f"5. {SUMMARY_COMMAND} 產生 AI 決策摘要\n"
         "\n"
         "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
         "\n"
-                "指令列表：\n"
-                + "\n".join(command_lines)
+        "指令列表：\n"
+        + "\n".join(command_lines)
     )
+
+
+async def _run_decision_summary_command(
+    *,
+    active_trip: LineTrip | None,
+    decision_summary_service: DecisionSummaryService | None,
+) -> str:
+    if active_trip is None:
+        return TRIP_REQUIRED_MESSAGE
+    if decision_summary_service is None:
+        return SUMMARY_FEATURE_UNAVAILABLE_MESSAGE
+
+    try:
+        result = await decision_summary_service.summarize_trip(active_trip)
+    except LodgingDecisionSummaryConfigurationError:
+        return SUMMARY_FEATURE_UNAVAILABLE_MESSAGE
+    except LodgingDecisionSummaryEmptyTripError:
+        return SUMMARY_EMPTY_TRIP_MESSAGE
+    except LodgingDecisionSummaryError as exc:
+        logger.warning(
+            "Failed to generate lodging decision summary: %s: %s",
+            exc.__class__.__name__,
+            exc,
+        )
+        return SUMMARY_FAILED_MESSAGE
+    except Exception:
+        logger.exception("Unexpected lodging decision summary failure.")
+        return SUMMARY_FAILED_MESSAGE
+
+    return build_line_lodging_decision_summary(result)
 
 
 def _format_notion_sync_summary(
@@ -752,6 +818,7 @@ async def process_events(
     lodging_link_service: LodgingLinkService,
     trip_repository: TripRepository | None = None,
     trip_display_repository: TripDisplayRepository | None = None,
+    decision_summary_service: DecisionSummaryService | None = None,
     notion_sync_repository: NotionSyncRepository | None = None,
     notion_target_manager: NotionTargetManager | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
@@ -785,6 +852,7 @@ async def process_events(
             line_client=line_client,
             trip_repository=trip_repository,
             trip_display_repository=trip_display_repository,
+            decision_summary_service=decision_summary_service,
             trip_detail_url_builder=trip_detail_url_builder,
             notion_sync_repository=notion_sync_repository,
             notion_target_manager=active_notion_target_manager,

@@ -1,6 +1,6 @@
 # Trip Display Surface
 
-這份文件描述 `add-trip-display-surface` change 完成後的操作行為，以及後續 `add-lodging-decision-summary` 可以直接重用的 canonical payload。
+這份文件描述 `add-trip-display-surface` change 完成後的操作行為，以及 `/摘要` 目前實際重用的 canonical payload。
 
 ## 定位
 
@@ -73,7 +73,9 @@ payload = surface.to_summary_payload()
 - `lodgings[]`
   - `document_id`
   - `platform`
+  - `property_name`
   - `display_name`
+  - `city`
   - `hero_image_url`
   - `line_hero_image_url`
   - `target_url`
@@ -81,6 +83,8 @@ payload = surface.to_summary_payload()
   - `price_amount`
   - `price_currency`
   - `availability`
+  - `is_sold_out`
+  - `amenities`
   - `maps_url`
   - `notion_page_url`
   - `captured_at`
@@ -89,6 +93,7 @@ payload = surface.to_summary_payload()
 ## Operator notes
 
 - `/清單` 與 `/trips/{display_token}` 不依賴 Notion schema，Notion 壞掉也不應影響主要顯示流程。
+- `/摘要` 現在已直接重用這份 payload；若要調整 AI 輸入欄位，請先改 `app.trip_display`，再看 `app/lodging_summary/`。
 - `hero_image_url` 是原始抓到的主圖；`line_hero_image_url` 是已過 LINE 相容性篩選、可直接給 Flex hero image 用的欄位。
 - 若使用者抱怨看不到 Notion 入口，先檢查該旅次是否已有 scoped target，而不是先看旅次頁本身。
 - 若需要重新產生 Notion target，可使用 scoped `POST /jobs/notion-sync/setup` 或在該旅次執行 `/全部重來`。

@@ -1,6 +1,6 @@
 # Nihon LINE Bot
 
-Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓每個 LINE 聊天室先切到「目前旅次」，再把聊天裡出現的住宿連結收進 MongoDB、補齊住宿頁地圖與價格資訊，並直接從 Mongo canonical data 產生 `/清單` preview 與只讀旅次頁。Notion 仍然保留，但定位改成可選的 export / manual maintenance surface，而不是主要瀏覽介面。
+Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓每個 LINE 聊天室先切到「目前旅次」，再把聊天裡出現的住宿連結收進 MongoDB、補齊住宿頁地圖與價格資訊，並直接從 Mongo canonical data 產生 `/清單` preview、只讀旅次頁與 `/摘要` AI 決策摘要。Notion 仍然保留，但定位改成可選的 export / manual maintenance surface，而不是主要瀏覽介面。
 
 目前支援的主流程：
 
@@ -11,7 +11,8 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 5. 以目前旅次範圍做重複判斷後寫入 MongoDB。
 6. 透過 enrichment job 補上名稱、地址、座標、設備、價格與 Google Maps 連結。
 7. `/清單` 會直接從 Mongo canonical data 回傳旅次 preview，並附上只讀旅次頁連結。
-8. 透過 Notion sync job 將資料建立或更新到旅次對應的 Notion data source；若有設定 target，旅次頁也會提供 Notion 匯出捷徑。
+8. `/摘要` 會直接根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。
+9. 透過 Notion sync job 將資料建立或更新到旅次對應的 Notion data source；若有設定 target，旅次頁也會提供 Notion 匯出捷徑。
 
 ## 功能重點
 
@@ -22,12 +23,13 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - 可選擇把旅次相關指令與住宿連結收錄從控制聊天室 A 代理到被控制聊天室 B，方便私下操作正式群組資料。
 - 提供 mobile-friendly 的只讀旅次頁，直接從 Mongo 顯示候選住宿，支援基本篩選與排序。
 - `/清單` 會回 LINE Flex carousel，每筆候選住宿一張卡片；若 Mongo 已存好 `line_hero_image_url`，會直接顯示 hero image，再引導到房源頁與旅次詳情頁。
+- `/摘要` 會以 Gemini structured output 回傳目前旅次的候選住宿、優缺點、缺漏資訊與討論重點。
 - 可選擇在成功收錄或發現重複連結時直接回覆 LINE。
 - 提供住宿 enrichment API 與 Notion sync API，方便手動觸發或串接排程。
-- 提供 `/help`、`/ping`、`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理`、`/全部重來` 九個 LINE 指令。
+- 提供 `/help`、`/ping`、`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/摘要`、`/整理`、`/全部重來` 十個 LINE 指令。
 - 提供 shell / PowerShell 腳本協助啟動 MongoDB、服務與測試。
 
-旅次顯示層的操作與未來 AI 摘要整合點，請參考 [docs/trip-display-surface.md](docs/trip-display-surface.md)。
+旅次顯示層與 AI 摘要的操作說明，請參考 [docs/trip-display-surface.md](docs/trip-display-surface.md) 與 [docs/lodging-decision-summary.md](docs/lodging-decision-summary.md)。
 
 ## 資料流程
 
@@ -42,6 +44,7 @@ LINE message
   -> MongoDB captured_lodging_links
   -> /清單 LINE preview
   -> /trips/{display_token} read-only trip detail surface
+  -> /摘要 Gemini decision summary
   -> lodging enrichment job
   -> optional Notion sync job
   -> trip-scoped Notion data source (optional export)
@@ -52,6 +55,7 @@ LINE message
 ```text
 app/
   controllers/         Webhook / job controller 與 repository adapter
+  lodging_summary/     Gemini client、AI 摘要 service 與 LINE rendering
   lodging_links/       Booking / Agoda 網址分類與短網址解析流程
   map_enrichment/      住宿頁地圖、地址、價格、設備資料解析
   models/              MongoDB 文件與共用 model
@@ -77,6 +81,7 @@ test.sh / test.ps1     單元測試與 smoke test
 - MongoDB 7.0 以上，或用 Docker Compose 啟動內建 MongoDB
 - LINE Messaging API channel
 - 若要同步 Notion：Notion integration token 與可寫入的 parent page / data source
+- 若要使用 `/摘要`：Gemini Developer API key
 - 若要使用 `start.sh` / `test.sh`：本機需有 conda
 
 ## 快速開始
@@ -123,13 +128,17 @@ Copy-Item .env.example .env
 
 如果只想先測 webhook 收錄到 MongoDB，不做 Notion sync，Notion 相關設定可以先留空。
 
+如果你要啟用 `/摘要` AI 決策摘要，另外需要：
+
+- `GEMINI_API_KEY`
+
 如果你想在安靜的控制聊天室 A 私下操作另一個正式群組 B，可另外設定：
 
 - `LINE_COMMAND_CONTROL_SOURCE_GROUP_ID`
 - `LINE_COMMAND_CONTROL_TARGET_GROUP_ID`
 
-啟用後，`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理`、`/全部重來` 會改作用在 B 的 group scope；但你在 A 直接貼 Booking / Agoda / Airbnb 連結時，系統仍然只看 A 自己的 active trip，不會偷偷寫進 B。
-啟用後，`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理`、`/全部重來`，以及你在 A 貼出的 Booking / Agoda / Airbnb 住宿連結，都會改作用在 B 的 group scope。LINE 回覆仍然會回在 A，但 active trip、duplicate lookup、capture 儲存與後續 sync 都以 B 為準。
+啟用後，`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/摘要`、`/整理`、`/全部重來` 會改作用在 B 的 group scope；但你在 A 直接貼 Booking / Agoda / Airbnb 連結時，系統仍然只看 A 自己的 active trip，不會偷偷寫進 B。
+啟用後，`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/摘要`、`/整理`、`/全部重來`，以及你在 A 貼出的 Booking / Agoda / Airbnb 住宿連結，都會改作用在 B 的 group scope。LINE 回覆仍然會回在 A，但 active trip、duplicate lookup、capture 儲存與後續 sync 都以 B 為準。
 
 ### 3. 啟動 MongoDB
 
@@ -274,6 +283,14 @@ curl http://127.0.0.1:8000/healthz
 | `NOTION_REQUEST_TIMEOUT` | `10.0` | Notion HTTP request timeout。 |
 | `NOTION_SYNC_BATCH_SIZE` | `20` | API / job 預設一次同步幾筆。 |
 
+### Gemini AI 摘要
+
+| 變數 | 預設值 | 說明 |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | 空字串 | Gemini Developer API key；未設定時 `/摘要` 會回覆尚未設定完成。 |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | `/摘要` 使用的 Gemini model。 |
+| `GEMINI_REQUEST_TIMEOUT` | `15.0` | 呼叫 Gemini 產生 structured summary 的 timeout。 |
+
 ### 啟動腳本可覆寫的變數
 
 | 變數 | 預設值 | 說明 |
@@ -322,14 +339,16 @@ curl http://127.0.0.1:8000/healthz
 | `/目前旅次` | 查看目前啟用中的旅次名稱與旅次 ID。 |
 | `/封存旅次` | 封存目前旅次，並清空 active trip。 |
 | `/清單` | 回傳目前旅次的 LINE Flex carousel；每筆候選住宿一張卡片，並附上旅次詳情頁與可用時的 Notion 匯出捷徑。 |
+| `/摘要` | 根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。 |
 | `/整理` | 只針對目前旅次範圍，先跑 lodging enrichment，再同步 pending / failed / 有更新的資料到 Notion。 |
 | `/全部重來` | 只針對目前旅次範圍，忽略既有同步狀態，先重跑 enrichment，再強制同步所有資料到 Notion；若有預設 Notion parent page，也會自動建立該旅次的 target。 |
 
 注意：
 
 - 貼住宿連結前必須先有 active trip，否則 bot 只會回覆旅次建立 / 切換提示，不會收錄資料。
-- `/清單`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
+- `/清單`、`/摘要`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
 - Notion target 未設定完成時，`/清單` 仍可正常顯示 Mongo preview 與旅次頁，但不會出現 Notion 匯出捷徑；`/整理`、`/全部重來` 仍需要 Notion sync 設定。
+- `GEMINI_API_KEY` 未設定時，`/摘要` 會回覆 `AI 摘要尚未設定完成。`。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，指令仍會執行，但 bot 無法回覆訊息。
 
 ## API 總覽
@@ -767,6 +786,7 @@ python -m app.notion_sync_job
 - `start.sh` / `start.ps1` 會要求 `.env` 存在，否則不會啟動。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，系統仍可驗證 webhook 並寫入 MongoDB，但所有 reply message 都會失效。
 - Mongo 是旅次顯示層的 source of truth；Notion target 只會影響 export / sync，不影響 `/清單` 與 `/trips/{display_token}` 的主顯示流程。
+- `/摘要` 直接重用 `app.trip_display` 的 canonical payload，不會另外重查原始聊天紀錄或 Notion rich text。
 - 若你在 Notion 建好 data source 後想長期固定使用同一份全域資料，建議把 setup 回傳的 id 回填到 `.env`。
 - 若你要開始規劃新旅次，先在 LINE 用 `/建立旅次 <名稱>` 建立 active trip，再為該旅次呼叫 scoped `POST /jobs/notion-sync/setup`，或直接執行 `/全部重來` 讓系統建立 trip-scoped target。
-- 未來若要把 `add-lodging-decision-summary` 接上旅次摘要，請直接重用 `app.trip_display` 的 canonical payload 與 [docs/trip-display-surface.md](docs/trip-display-surface.md) 中定義的整合點。
+- 若要調整 AI 摘要 prompt、schema 或 fallback 行為，請優先看 [docs/lodging-decision-summary.md](docs/lodging-decision-summary.md) 與 `app/lodging_summary/`。
