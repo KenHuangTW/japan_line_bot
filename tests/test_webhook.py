@@ -9,6 +9,12 @@ from urllib.parse import urlsplit
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.lodging_summary import (
+    LodgingDecisionSummaryEmptyTripError,
+    LodgingDecisionSummaryInvalidResponseError,
+    LodgingDecisionSummaryResult,
+    LodgingDecisionSummaryTimeoutError,
+)
 from app.lodging_links.common import build_lodging_lookup_keys
 from app.lodging_links.service import LodgingLinkService
 from app.line_security import generate_signature
@@ -22,6 +28,14 @@ from app.notion_sync.models import (
     NotionSyncSourceScope,
 )
 from app.notion_sync.targets import NotionTargetConfig
+from app.schemas.lodging_summary import (
+    LodgingDecisionCandidate,
+    LodgingDecisionSummaryLodging,
+    LodgingDecisionSummaryRequest,
+    LodgingDecisionSummaryResponse,
+    LodgingDecisionSummaryStats,
+    LodgingDecisionSummaryTrip,
+)
 from app.trip_display import MongoTripDisplayRepository
 
 DEFAULT_TRIP_ID = "trip-current"
@@ -71,6 +85,25 @@ class FlexFailingLineClient:
 
     async def reply_text(self, reply_token: str, text: str) -> None:
         self.calls.append((reply_token, text))
+
+
+class FakeDecisionSummaryService:
+    def __init__(
+        self,
+        *,
+        result: LodgingDecisionSummaryResult | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[str] = []
+
+    async def summarize_trip(self, trip: LineTrip) -> LodgingDecisionSummaryResult:
+        self.calls.append(trip.trip_id)
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None
+        return self.result
 
 
 class FakeLodgingUrlResolver:
@@ -1266,6 +1299,77 @@ def _build_trip_target(
     )
 
 
+def _build_decision_summary_result(
+    *,
+    trip_id: str = DEFAULT_TRIP_ID,
+    trip_title: str = DEFAULT_TRIP_TITLE,
+    display_token: str = "trip-display-current",
+) -> LodgingDecisionSummaryResult:
+    return LodgingDecisionSummaryResult(
+        request=LodgingDecisionSummaryRequest(
+            trip=LodgingDecisionSummaryTrip(
+                trip_id=trip_id,
+                title=trip_title,
+                status="open",
+                display_token=display_token,
+            ),
+            summary=LodgingDecisionSummaryStats(
+                total_lodgings=2,
+                available_count=1,
+                sold_out_count=1,
+                unknown_count=0,
+            ),
+            lodgings=[
+                LodgingDecisionSummaryLodging(
+                    document_id="doc-1",
+                    platform="booking",
+                    display_name="Foo Hotel",
+                    property_name="Foo Hotel",
+                    city="東京",
+                    formatted_address="東京都新宿區",
+                    price_amount=3200,
+                    price_currency="TWD",
+                    availability="available",
+                    is_sold_out=False,
+                    amenities=["wifi", "kitchen"],
+                    maps_url="https://maps.google.com/?q=35.1,139.1",
+                    target_url="https://www.booking.com/hotel/jp/foo.html",
+                    notion_page_url="https://www.notion.so/foo",
+                ),
+                LodgingDecisionSummaryLodging(
+                    document_id="doc-2",
+                    platform="agoda",
+                    display_name="Bar Hotel",
+                    property_name="Bar Hotel",
+                    city="東京",
+                    formatted_address="東京都淺草",
+                    price_amount=None,
+                    price_currency=None,
+                    availability="sold_out",
+                    is_sold_out=True,
+                    amenities=["onsen"],
+                    maps_url="https://maps.google.com/?q=bar",
+                    target_url="https://www.agoda.com/bar.html",
+                    notion_page_url=None,
+                ),
+            ],
+        ),
+        response=LodgingDecisionSummaryResponse(
+            top_candidates=[
+                LodgingDecisionCandidate(
+                    document_id="doc-1",
+                    display_name="Foo Hotel",
+                    reason="地點與價格資訊完整，適合優先討論。",
+                )
+            ],
+            pros=["地點方便", "價格透明"],
+            cons=["缺少實際入住評價"],
+            missing_information=["取消政策"],
+            discussion_points=["是否優先考慮交通便利性"],
+        ),
+    )
+
+
 def _matches_trip_source(
     trip: LineTrip,
     source_scope: NotionSyncSourceScope,
@@ -1659,6 +1763,7 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
                 "3. /整理 同步目前旅次到 Notion\n"
                 "4. /清單 查看目前旅次清單\n"
+                "5. /摘要 產生 AI 決策摘要\n"
                 "\n"
                 "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
                 "\n"
@@ -1670,10 +1775,241 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "/目前旅次：查看目前啟用中的旅次\n"
                 "/封存旅次：封存目前旅次並清空 active trip\n"
                 "/清單：回傳目前旅次的住宿 preview 與詳情頁連結\n"
+                "/摘要：產生目前旅次的 AI 決策摘要\n"
                 "/整理：執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料\n"
                 "/全部重來：忽略既有同步狀態，只把目前旅次中的資料強制重新同步到 Notion"
             ),
         )
+    ]
+
+
+def test_line_webhook_replies_lodging_decision_summary() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    decision_summary_service = FakeDecisionSummaryService(
+        result=_build_decision_summary_result()
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            decision_summary_service=decision_summary_service,
+        )
+    )
+
+    payload = _build_payload("/摘要")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert decision_summary_service.calls == [DEFAULT_TRIP_ID]
+    assert fake_line_client.calls == [
+        (
+            "reply-token",
+            (
+                "目前旅次摘要：東京 2026\n"
+                "候選住宿 2 筆（可訂 1 / 已售完 1 / 待確認 0）\n"
+                "\n"
+                "優先候選\n"
+                "1. Foo Hotel\n"
+                "Booking.com｜TWD 3,200｜可訂｜東京\n"
+                "- 地點與價格資訊完整，適合優先討論。\n"
+                "\n"
+                "優點\n"
+                "- 地點方便\n"
+                "- 價格透明\n"
+                "\n"
+                "缺點\n"
+                "- 缺少實際入住評價\n"
+                "\n"
+                "待補資訊\n"
+                "- 取消政策\n"
+                "\n"
+                "討論重點\n"
+                "- 是否優先考慮交通便利性"
+            ),
+        )
+    ]
+
+
+def test_line_webhook_summary_command_requires_active_trip() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    decision_summary_service = FakeDecisionSummaryService(
+        result=_build_decision_summary_result()
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            decision_summary_service=decision_summary_service,
+            active_trip=False,
+        )
+    )
+
+    payload = _build_payload("/摘要")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert decision_summary_service.calls == []
+    assert fake_line_client.calls == [
+        (
+            "reply-token",
+            "目前沒有啟用中的旅次，請先用 /建立旅次 <名稱> 建立，或用 /切換旅次 <名稱> 切換。",
+        )
+    ]
+
+
+def test_line_webhook_summary_command_handles_empty_trip() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    decision_summary_service = FakeDecisionSummaryService(
+        error=LodgingDecisionSummaryEmptyTripError("empty trip")
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            decision_summary_service=decision_summary_service,
+        )
+    )
+
+    payload = _build_payload("/摘要")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert fake_line_client.calls == [
+        ("reply-token", "目前旅次還沒有住宿資料可摘要，請先貼住宿連結。")
+    ]
+
+
+def test_line_webhook_summary_command_handles_timeout() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    decision_summary_service = FakeDecisionSummaryService(
+        error=LodgingDecisionSummaryTimeoutError("timed out")
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            decision_summary_service=decision_summary_service,
+        )
+    )
+
+    payload = _build_payload("/摘要")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert fake_line_client.calls == [
+        ("reply-token", "目前無法產生住宿摘要，請稍後再試。")
+    ]
+
+
+def test_line_webhook_summary_command_handles_invalid_ai_output() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    decision_summary_service = FakeDecisionSummaryService(
+        error=LodgingDecisionSummaryInvalidResponseError("invalid output")
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            decision_summary_service=decision_summary_service,
+        )
+    )
+
+    payload = _build_payload("/摘要")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert fake_line_client.calls == [
+        ("reply-token", "目前無法產生住宿摘要，請稍後再試。")
     ]
 
 

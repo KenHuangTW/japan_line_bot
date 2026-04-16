@@ -15,6 +15,7 @@ from app.controllers.validators.line_webhook import (
     ensure_line_webhook_request_is_valid,
     parse_line_webhook_payload,
 )
+from app.lodging_summary import DecisionSummaryService
 from app.lodging_links import LodgingLinkService
 from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
 from app.notion_sync import NotionTargetManager, NotionSyncRepository
@@ -54,6 +55,15 @@ def _get_trip_display_repository(request: Request) -> TripDisplayRepository | No
 
 def _get_lodging_link_service(request: Request) -> LodgingLinkService:
     return cast(LodgingLinkService, request.app.state.lodging_link_service)
+
+
+def _get_decision_summary_service(
+    request: Request,
+) -> DecisionSummaryService | None:
+    return cast(
+        DecisionSummaryService | None,
+        request.app.state.decision_summary_service,
+    )
 
 
 def _get_notion_sync_repository(request: Request) -> NotionSyncRepository | None:
@@ -104,6 +114,7 @@ async def line_webhook(
         lodging_link_service=_get_lodging_link_service(request),
         trip_repository=_get_trip_repository(request),
         trip_display_repository=_get_trip_display_repository(request),
+        decision_summary_service=_get_decision_summary_service(request),
         notion_sync_repository=_get_notion_sync_repository(request),
         notion_target_manager=_get_notion_target_manager(request),
         map_enrichment_repository=_get_map_enrichment_repository(request),

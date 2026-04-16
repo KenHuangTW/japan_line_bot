@@ -120,6 +120,7 @@ def _build_lodging(document: dict[str, Any]) -> TripDisplayLodging:
         url=str(document.get("url") or ""),
         resolved_url=document.get("resolved_url"),
         property_name=document.get("property_name"),
+        city=document.get("city"),
         hero_image_url=document.get("hero_image_url"),
         line_hero_image_url=(
             document.get("line_hero_image_url")
@@ -129,6 +130,11 @@ def _build_lodging(document: dict[str, Any]) -> TripDisplayLodging:
         price_amount=document.get("price_amount"),
         price_currency=document.get("price_currency"),
         is_sold_out=document.get("is_sold_out"),
+        amenities=tuple(
+            item
+            for item in (document.get("amenities") or [])
+            if isinstance(item, str) and item.strip()
+        ),
         google_maps_url=document.get("google_maps_url"),
         google_maps_search_url=document.get("google_maps_search_url"),
         notion_page_url=document.get("notion_page_url"),

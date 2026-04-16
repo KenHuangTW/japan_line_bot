@@ -86,6 +86,9 @@ class Settings(BaseModel):
     notion_api_version: str = NOTION_API_VERSION
     notion_request_timeout: float = 10.0
     notion_sync_batch_size: int = 20
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_request_timeout: float = 15.0
 
     @property
     def is_line_secret_configured(self) -> bool:
@@ -96,6 +99,10 @@ class Settings(BaseModel):
         return self.is_line_secret_configured and bool(
             self.line_channel_access_token.strip()
         )
+
+    @property
+    def is_gemini_configured(self) -> bool:
+        return bool(self.gemini_api_key.strip())
 
     @property
     def has_line_command_group_override(self) -> bool:
@@ -208,4 +215,9 @@ class Settings(BaseModel):
                 os.getenv("NOTION_REQUEST_TIMEOUT", "10.0")
             ),
             notion_sync_batch_size=int(os.getenv("NOTION_SYNC_BATCH_SIZE", "20")),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            gemini_request_timeout=float(
+                os.getenv("GEMINI_REQUEST_TIMEOUT", "15.0")
+            ),
         )
