@@ -8,3 +8,10 @@ data/*.jsonl
 # AI Context file
 AGENT.md
 CLAUDE.md
+
+# Local AI skill/workflow overrides
+.codex/skills/*.local/
+.codex/skills/*.local.md
+.windsurf/skills/*.local/
+.windsurf/skills/*.local.md
+.windsurf/workflows/*.local.md
