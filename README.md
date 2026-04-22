@@ -21,7 +21,7 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - 每個 LINE 聊天室都可以建立、切換、查詢與封存 active trip。
 - 同一聊天室內只在同一個旅次判定重複；不同旅次可保留相同房源。
 - 可選擇把旅次相關指令與住宿連結收錄從控制聊天室 A 代理到被控制聊天室 B，方便私下操作正式群組資料。
-- 提供 mobile-friendly 的只讀旅次頁，直接從 Mongo 顯示候選住宿，支援基本篩選與排序。
+- 提供 mobile-friendly 的只讀旅次頁，直接從 Mongo 顯示候選住宿與住宿縮圖，支援基本篩選與排序。
 - `/清單` 會回 LINE Flex carousel，每筆候選住宿一張卡片；若 Mongo 已存好 `line_hero_image_url`，會直接顯示 hero image，再引導到房源頁與旅次詳情頁。
 - `/摘要` 會以 Gemini structured output 回傳目前旅次的候選住宿、優缺點、缺漏資訊與討論重點。
 - 可選擇在成功收錄或發現重複連結時直接回覆 LINE。
@@ -395,7 +395,8 @@ response：
 行為說明：
 
 - `display_token` 是穩定的旅次分享 token，不會暴露 raw `group_id` / `room_id` / `user_id`。
-- token 有效時，頁面會顯示住宿名稱、平台、價格、可訂狀態、使用者決策狀態、地圖連結與 Notion 匯出捷徑（若該旅次有 target）。
+- token 有效時，頁面會顯示住宿縮圖、名稱、平台、價格、可訂狀態、使用者決策狀態、地圖連結與 Notion 匯出捷徑（若該旅次有 target）。
+- 住宿卡片優先使用 `hero_image_url` 作為網頁縮圖，缺圖時會顯示固定尺寸 fallback，不影響卡片操作。
 - 預設會顯示 `候選中` 與 `已預訂`，隱藏 `不考慮`；需要整理或復原時可用 `decision_status=dismissed` 篩選。
 - token 無效時，會回 `404 Invalid trip display link.`。
 

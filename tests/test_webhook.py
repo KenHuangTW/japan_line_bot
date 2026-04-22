@@ -2982,6 +2982,8 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
                 "price_amount": 3200,
                 "price_currency": "TWD",
                 "is_sold_out": False,
+                "hero_image_url": "https://cdn.example.com/foo-detail.webp",
+                "line_hero_image_url": "https://cdn.example.com/foo-line.jpg",
                 "formatted_address": "東京新宿區",
                 "google_maps_url": "https://maps.google.com/?q=35.1,139.1",
             }
@@ -3028,6 +3030,10 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
     assert "開啟 Notion 匯出" in response.text
     assert "東京新宿區" in response.text
     assert "不考慮這間" in response.text
+    assert 'class="card-thumbnail"' in response.text
+    assert 'src="https://cdn.example.com/foo-detail.webp"' in response.text
+    assert 'href="https://www.booking.com/hotel/jp/foo.html"' in response.text
+    assert 'class="card-thumbnail-fallback"' in response.text
 
     filtered = client.get("/trips/trip-display-current", params={"availability": "available"})
 
