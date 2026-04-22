@@ -19,6 +19,7 @@ PLATFORM_PROPERTY = "平台"
 LODGING_URL_PROPERTY = "房源URL"
 GOOGLE_MAPS_PROPERTY = "Google 地圖 URL"
 AMENITIES_PROPERTY = "設施"
+DECISION_STATUS_PROPERTY = "決策狀態"
 LAST_UPDATED_PROPERTY = "最後更新時間"
 DOCUMENT_ID_PROPERTY = "ID"
 
@@ -27,6 +28,12 @@ PLATFORM_OPTIONS = [
     {"name": "agoda", "color": "green"},
     {"name": "airbnb", "color": "red"},
     {"name": "unknown", "color": "default"},
+]
+
+DECISION_STATUS_OPTIONS = [
+    {"name": "candidate", "color": "default"},
+    {"name": "booked", "color": "green"},
+    {"name": "dismissed", "color": "yellow"},
 ]
 
 PROPERTY_SPECS = (
@@ -59,6 +66,12 @@ PROPERTY_SPECS = (
         "label": AMENITIES_PROPERTY,
         "aliases": (AMENITIES_PROPERTY, "Amenities"),
         "definition": {"rich_text": {}},
+    },
+    {
+        "key": "decision_status",
+        "label": DECISION_STATUS_PROPERTY,
+        "aliases": (DECISION_STATUS_PROPERTY, "Decision Status"),
+        "definition": {"select": {"options": list(DECISION_STATUS_OPTIONS)}},
     },
     {
         "key": "last_updated_at",
@@ -553,6 +566,9 @@ def build_notion_page_properties(candidate: NotionSyncCandidate) -> dict[str, An
         LODGING_URL_PROPERTY: {"url": _safe_url(candidate.target_url)},
         GOOGLE_MAPS_PROPERTY: {"url": _safe_url(candidate.maps_url)},
         AMENITIES_PROPERTY: {"rich_text": _rich_text_value(", ".join(candidate.amenities))},
+        DECISION_STATUS_PROPERTY: {
+            "select": {"name": _normalize_decision_status(candidate.decision_status)}
+        },
         LAST_UPDATED_PROPERTY: {
             "date": (
                 {"start": last_updated_at.isoformat()}
@@ -699,6 +715,13 @@ def _normalize_platform(platform: str | None) -> str:
     if text in {"booking", "agoda", "airbnb"}:
         return text
     return "unknown"
+
+
+def _normalize_decision_status(status: str | None) -> str:
+    text = (status or "").strip().lower()
+    if text in {"candidate", "booked", "dismissed"}:
+        return text
+    return "candidate"
 
 
 def _safe_url(url: str | None) -> str | None:

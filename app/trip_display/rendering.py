@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
 from html import escape
+from typing import Any
+from urllib.parse import urlencode
 
 from app.line_media import normalize_line_uri
-
 from app.trip_display.models import (
     TripDisplayFilters,
     TripDisplayLodging,
@@ -31,6 +31,14 @@ AVAILABILITY_LABELS = {
     "unknown": "待確認",
 }
 
+DECISION_STATUS_LABELS = {
+    "active": "顯示中",
+    "all": "全部決策",
+    "candidate": "候選中",
+    "booked": "已預訂",
+    "dismissed": "不考慮",
+}
+
 
 def build_line_trip_preview(
     surface: TripDisplaySurface,
@@ -41,8 +49,8 @@ def build_line_trip_preview(
     lines = [
         f"目前旅次：{surface.trip_title}",
         (
-            f"候選住宿 {surface.total_lodgings} 筆"
-            f"（可訂 {surface.available_count} / 已售完 {surface.sold_out_count} / 待確認 {surface.unknown_count}）"
+            f"住宿 {surface.total_lodgings} 筆"
+            f"（已訂 {surface.booked_count} / 候選 {surface.candidate_count} / 不考慮 {surface.dismissed_count}）"
         ),
     ]
 
@@ -54,7 +62,8 @@ def build_line_trip_preview(
                     f"{index}. {lodging.display_name}",
                     (
                         f"{platform_label(lodging.platform)}｜"
-                        f"{lodging.price_label}｜{lodging.availability_label}"
+                        f"{lodging.price_label}｜{lodging.availability_label}｜"
+                        f"{lodging.decision_status_label}"
                     ),
                 ]
             )
@@ -62,7 +71,9 @@ def build_line_trip_preview(
         lines.append("目前還沒有候選住宿，先貼 Booking / Agoda / Airbnb 連結進來。")
 
     if surface.visible_count > preview_limit:
-        lines.append(f"還有 {surface.visible_count - preview_limit} 筆，請到旅次頁查看完整清單。")
+        lines.append(
+            f"還有 {surface.visible_count - preview_limit} 筆，請到旅次頁查看完整清單。"
+        )
 
     lines.extend(
         [
@@ -108,8 +119,8 @@ def build_line_trip_flex_message(
 
 def build_line_trip_flex_alt_text(surface: TripDisplaySurface) -> str:
     return (
-        f"{surface.trip_title}：{surface.total_lodgings} 筆候選住宿，"
-        f"可訂 {surface.available_count} 筆，"
+        f"{surface.trip_title}：已訂 {surface.booked_count} 筆，"
+        f"候選 {surface.candidate_count} 筆，"
         "請開啟旅次詳情查看完整清單。"
     )
 
@@ -119,7 +130,10 @@ def build_trip_detail_html(
     *,
     request_path: str,
 ) -> str:
-    cards = "\n".join(_build_lodging_cards(surface.lodgings)) or _build_empty_state()
+    cards = (
+        "\n".join(_build_lodging_cards(surface.lodgings, request_path=request_path))
+        or _build_empty_state()
+    )
     notion_link = (
         (
             '<a class="secondary-link"'
@@ -320,6 +334,26 @@ def build_trip_detail_html(
         color: var(--accent);
         text-decoration: none;
       }}
+      .decision-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }}
+      .decision-actions form {{
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }}
+      .decision-actions button {{
+        min-height: 38px;
+      }}
+      .decision-actions .secondary {{
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.72);
+        color: var(--ink);
+      }}
       .empty {{
         padding: 36px 18px;
         text-align: center;
@@ -341,6 +375,9 @@ def build_trip_detail_html(
         <h1>{escape(surface.trip_title)}</h1>
         <div class="summary">
           <span class="metric">顯示 {surface.visible_count} / {surface.total_lodgings} 筆</span>
+          <span class="metric">已訂 {surface.booked_count}</span>
+          <span class="metric">候選 {surface.candidate_count}</span>
+          <span class="metric">不考慮 {surface.dismissed_count}</span>
           <span class="metric">可訂 {surface.available_count}</span>
           <span class="metric">已售完 {surface.sold_out_count}</span>
           <span class="metric">待確認 {surface.unknown_count}</span>
@@ -361,6 +398,12 @@ def build_trip_detail_html(
             狀態
             <select name="availability">
               {_build_availability_options(surface.filters)}
+            </select>
+          </label>
+          <label>
+            決策
+            <select name="decision_status">
+              {_build_decision_status_options(surface.filters)}
             </select>
           </label>
           <label>
@@ -434,6 +477,11 @@ def _build_flex_lodging_bubble(
                     "weight": "bold",
                     "size": "lg",
                     "wrap": True,
+                    **(
+                        {"action": {"type": "uri", "uri": source_url}}
+                        if source_url
+                        else {}
+                    ),
                 },
                 {
                     "type": "text",
@@ -467,6 +515,14 @@ def _build_flex_lodging_bubble(
                         },
                     ],
                 },
+                {
+                    "type": "text",
+                    "text": lodging.decision_status_label,
+                    "size": "sm",
+                    "color": _flex_decision_color(lodging),
+                    "weight": "bold",
+                    "wrap": True,
+                },
             ],
         },
         "footer": {
@@ -474,7 +530,7 @@ def _build_flex_lodging_bubble(
             "layout": "vertical",
             "spacing": "sm",
             "contents": _build_bubble_footer_contents(
-                source_url=source_url,
+                lodging=lodging,
                 detail_url=trip_detail_url,
             ),
         },
@@ -574,22 +630,19 @@ def _build_empty_flex_bubble(
 
 def _build_bubble_footer_contents(
     *,
-    source_url: str | None,
+    lodging: TripDisplayLodging,
     detail_url: str | None,
 ) -> list[dict[str, Any]]:
     contents: list[dict[str, Any]] = []
-    if source_url:
+    postback_action = _build_decision_postback_action(lodging)
+    if postback_action is not None:
         contents.append(
             {
                 "type": "button",
                 "style": "primary",
                 "height": "sm",
                 "color": "#156B6C",
-                "action": {
-                    "type": "uri",
-                    "label": "開啟房源",
-                    "uri": source_url,
-                },
+                "action": postback_action,
             }
         )
     if detail_url:
@@ -626,6 +679,46 @@ def _flex_status_color(lodging: TripDisplayLodging) -> str:
     return "#9F5B00"
 
 
+def _flex_decision_color(lodging: TripDisplayLodging) -> str:
+    if lodging.decision_status == "booked":
+        return "#156B6C"
+    if lodging.decision_status == "dismissed":
+        return "#9F5B00"
+    return "#5F6B73"
+
+
+def _build_decision_postback_action(
+    lodging: TripDisplayLodging,
+) -> dict[str, str] | None:
+    if lodging.decision_status == "dismissed":
+        return None
+    target_status = "candidate" if lodging.decision_status == "booked" else "booked"
+    label = "改回候選" if target_status == "candidate" else "已訂這間"
+    return {
+        "type": "postback",
+        "label": label,
+        "data": build_lodging_decision_postback_data(
+            document_id=lodging.document_id,
+            decision_status=target_status,
+        ),
+        "displayText": label,
+    }
+
+
+def build_lodging_decision_postback_data(
+    *,
+    document_id: str,
+    decision_status: str,
+) -> str:
+    return urlencode(
+        {
+            "action": "lodging_decision",
+            "document_id": document_id,
+            "decision_status": decision_status,
+        }
+    )
+
+
 def _build_platform_options(surface: TripDisplaySurface) -> str:
     options = ['<option value="">全部平台</option>']
     selected_platform = (surface.filters.platform or "").lower()
@@ -649,6 +742,17 @@ def _build_availability_options(filters: TripDisplayFilters) -> str:
     )
 
 
+def _build_decision_status_options(filters: TripDisplayFilters) -> str:
+    return "\n".join(
+        (
+            f'<option value="{escape(key, quote=True)}"'
+            f'{" selected" if filters.decision_status == key else ""}>'
+            f"{escape(label)}</option>"
+        )
+        for key, label in DECISION_STATUS_LABELS.items()
+    )
+
+
 def _build_sort_options(filters: TripDisplayFilters) -> str:
     return "\n".join(
         (
@@ -660,11 +764,16 @@ def _build_sort_options(filters: TripDisplayFilters) -> str:
     )
 
 
-def _build_lodging_cards(lodgings: tuple[TripDisplayLodging, ...]) -> list[str]:
+def _build_lodging_cards(
+    lodgings: tuple[TripDisplayLodging, ...],
+    *,
+    request_path: str,
+) -> list[str]:
     cards: list[str] = []
     for lodging in lodgings:
         chips = [
             f'<span class="chip">{escape(platform_label(lodging.platform))}</span>',
+            _build_decision_chip(lodging),
             _build_availability_chip(lodging),
             f'<span class="chip">{escape(lodging.price_label)}</span>',
         ]
@@ -672,7 +781,9 @@ def _build_lodging_cards(lodgings: tuple[TripDisplayLodging, ...]) -> list[str]:
         if lodging.formatted_address:
             meta_lines.append(escape(lodging.formatted_address))
         if lodging.captured_at is not None:
-            meta_lines.append(f"收錄時間：{escape(lodging.captured_at.strftime('%Y-%m-%d %H:%M'))}")
+            meta_lines.append(
+                f"收錄時間：{escape(lodging.captured_at.strftime('%Y-%m-%d %H:%M'))}"
+            )
         links = [
             _build_anchor("原始連結", lodging.target_url),
         ]
@@ -680,6 +791,10 @@ def _build_lodging_cards(lodgings: tuple[TripDisplayLodging, ...]) -> list[str]:
             links.append(_build_anchor("地圖", lodging.maps_url))
         if lodging.notion_page_url:
             links.append(_build_anchor("Notion 頁面", lodging.notion_page_url))
+        decision_actions = _build_decision_action_forms(
+            lodging,
+            request_path=request_path,
+        )
         cards.append(
             "\n".join(
                 [
@@ -694,11 +809,21 @@ def _build_lodging_cards(lodgings: tuple[TripDisplayLodging, ...]) -> list[str]:
                         else ""
                     ),
                     f'  <div class="links">{"".join(link for link in links if link)}</div>',
+                    f'  <div class="decision-actions">{decision_actions}</div>',
                     "</article>",
                 ]
             )
         )
     return cards
+
+
+def _build_decision_chip(lodging: TripDisplayLodging) -> str:
+    chip_class = "chip"
+    if lodging.decision_status == "booked":
+        chip_class = "chip"
+    elif lodging.decision_status == "dismissed":
+        chip_class = "chip warn"
+    return f'<span class="{chip_class}">{escape(lodging.decision_status_label)}</span>'
 
 
 def _build_availability_chip(lodging: TripDisplayLodging) -> str:
@@ -708,6 +833,62 @@ def _build_availability_chip(lodging: TripDisplayLodging) -> str:
     elif lodging.availability_key == "unknown":
         chip_class = "chip warn"
     return f'<span class="{chip_class}">{escape(lodging.availability_label)}</span>'
+
+
+def _build_decision_action_forms(
+    lodging: TripDisplayLodging,
+    *,
+    request_path: str,
+) -> str:
+    action_path = (
+        f"{escape(request_path, quote=True)}/lodgings/"
+        f"{escape(lodging.document_id, quote=True)}/decision"
+    )
+    if lodging.decision_status == "booked":
+        return _build_decision_form(
+            action_path=action_path,
+            decision_status="candidate",
+            label="改回候選",
+            button_class="secondary",
+        )
+    if lodging.decision_status == "dismissed":
+        return _build_decision_form(
+            action_path=action_path,
+            decision_status="candidate",
+            label="改回候選",
+            button_class="secondary",
+        )
+    return "".join(
+        [
+            _build_decision_form(
+                action_path=action_path,
+                decision_status="booked",
+                label="已訂這間",
+            ),
+            _build_decision_form(
+                action_path=action_path,
+                decision_status="dismissed",
+                label="不考慮這間",
+                button_class="secondary",
+            ),
+        ]
+    )
+
+
+def _build_decision_form(
+    *,
+    action_path: str,
+    decision_status: str,
+    label: str,
+    button_class: str | None = None,
+) -> str:
+    class_attr = f' class="{escape(button_class, quote=True)}"' if button_class else ""
+    return (
+        f'<form method="post" action="{action_path}">'
+        f'<input type="hidden" name="decision_status" value="{escape(decision_status, quote=True)}" />'
+        f'<button type="submit"{class_attr}>{escape(label)}</button>'
+        "</form>"
+    )
 
 
 def _build_anchor(label: str, url: str | None) -> str:

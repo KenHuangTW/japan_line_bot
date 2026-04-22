@@ -5,6 +5,7 @@ from typing import Any, Protocol, Sequence
 
 from app.line_media import normalize_line_image_url
 from app.models import LineTrip
+from app.models.captured_lodging_link import LODGING_DECISION_STATUS_VALUES
 from app.notion_sync import NotionTargetRepository, build_source_scope
 from app.trip_display.models import (
     TripDisplayFilters,
@@ -70,6 +71,15 @@ class MongoTripDisplayRepository:
         unknown_count = sum(
             1 for lodging in all_lodgings if lodging.availability_key == "unknown"
         )
+        candidate_count = sum(
+            1 for lodging in all_lodgings if lodging.decision_status == "candidate"
+        )
+        booked_count = sum(
+            1 for lodging in all_lodgings if lodging.decision_status == "booked"
+        )
+        dismissed_count = sum(
+            1 for lodging in all_lodgings if lodging.decision_status == "dismissed"
+        )
         platform_options = tuple(
             sorted({lodging.platform for lodging in all_lodgings if lodging.platform})
         )
@@ -93,6 +103,9 @@ class MongoTripDisplayRepository:
             available_count=available_count,
             sold_out_count=sold_out_count,
             unknown_count=unknown_count,
+            candidate_count=candidate_count,
+            booked_count=booked_count,
+            dismissed_count=dismissed_count,
             notion_export_url=notion_export_url,
             generated_at=generated_at,
             platform_options=platform_options,
@@ -138,6 +151,9 @@ def _build_lodging(document: dict[str, Any]) -> TripDisplayLodging:
         google_maps_url=document.get("google_maps_url"),
         google_maps_search_url=document.get("google_maps_search_url"),
         notion_page_url=document.get("notion_page_url"),
+        decision_status=_resolve_decision_status(document.get("decision_status")),
+        decision_updated_at=document.get("decision_updated_at"),
+        decision_updated_by_user_id=document.get("decision_updated_by_user_id"),
         captured_at=document.get("captured_at"),
         updated_at=_resolve_updated_at(document),
     )
@@ -151,6 +167,7 @@ def _resolve_updated_at(document: dict[str, Any]) -> datetime | None:
             document.get("map_resolved_at"),
             document.get("details_resolved_at"),
             document.get("pricing_resolved_at"),
+            document.get("decision_updated_at"),
             document.get("notion_last_synced_at"),
         )
         if isinstance(value, datetime)
@@ -201,6 +218,16 @@ def _filter_lodgings(
             for lodging in results
             if lodging.availability_key == filters.availability
         )
+    if filters.decision_status == "active":
+        results = tuple(
+            lodging for lodging in results if lodging.decision_status != "dismissed"
+        )
+    elif filters.decision_status != "all":
+        results = tuple(
+            lodging
+            for lodging in results
+            if lodging.decision_status == filters.decision_status
+        )
     return tuple(results)
 
 
@@ -234,3 +261,11 @@ def _price_desc_sort_key(lodging: TripDisplayLodging) -> tuple[bool, float, date
     if lodging.price_amount is None:
         return True, float("inf"), fallback_time
     return False, -lodging.price_amount, fallback_time
+
+
+def _resolve_decision_status(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in LODGING_DECISION_STATUS_VALUES:
+            return normalized
+    return "candidate"

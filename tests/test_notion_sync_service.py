@@ -7,6 +7,7 @@ from app.notion_sync.job import _build_candidate
 from app.notion_sync.models import NotionDatabaseTarget, NotionPageResult, NotionSyncCandidate
 from app.notion_sync.service import (
     AMENITIES_PROPERTY,
+    DECISION_STATUS_PROPERTY,
     DOCUMENT_ID_PROPERTY,
     GOOGLE_MAPS_PROPERTY,
     LAST_UPDATED_PROPERTY,
@@ -137,6 +138,7 @@ def test_build_notion_data_source_properties_only_includes_expected_fields() -> 
         LODGING_URL_PROPERTY,
         GOOGLE_MAPS_PROPERTY,
         AMENITIES_PROPERTY,
+        DECISION_STATUS_PROPERTY,
         LAST_UPDATED_PROPERTY,
         DOCUMENT_ID_PROPERTY,
     ]
@@ -166,6 +168,7 @@ def test_build_notion_page_properties_uses_reduced_readable_fields() -> None:
         LODGING_URL_PROPERTY,
         GOOGLE_MAPS_PROPERTY,
         AMENITIES_PROPERTY,
+        DECISION_STATUS_PROPERTY,
         LAST_UPDATED_PROPERTY,
         DOCUMENT_ID_PROPERTY,
     ]
@@ -174,6 +177,7 @@ def test_build_notion_page_properties_uses_reduced_readable_fields() -> None:
     assert properties[LODGING_URL_PROPERTY]["url"] == candidate.resolved_url
     assert properties[GOOGLE_MAPS_PROPERTY]["url"] == candidate.google_maps_url
     assert properties[AMENITIES_PROPERTY]["rich_text"][0]["text"]["content"] == "Wi-Fi, 早餐"
+    assert properties[DECISION_STATUS_PROPERTY]["select"]["name"] == "candidate"
     assert properties[LAST_UPDATED_PROPERTY]["date"]["start"] == "2026-03-27T08:30:00+00:00"
     assert properties[DOCUMENT_ID_PROPERTY]["rich_text"][0]["text"]["content"] == "doc-123"
 
@@ -190,6 +194,7 @@ def test_build_notion_page_properties_keeps_airbnb_platform() -> None:
     properties = build_notion_page_properties(candidate)
 
     assert properties[PLATFORM_PROPERTY]["select"]["name"] == "airbnb"
+    assert properties[DECISION_STATUS_PROPERTY]["select"]["name"] == "candidate"
     assert (
         properties[LODGING_URL_PROPERTY]["url"]
         == "https://www.airbnb.com/rooms/123456789"
@@ -261,6 +266,7 @@ def test_build_notion_data_source_update_properties_renames_and_removes_old_fiel
     } >= {"booking", "agoda", "airbnb", "unknown"}
     assert LODGING_URL_PROPERTY in properties
     assert GOOGLE_MAPS_PROPERTY in properties
+    assert DECISION_STATUS_PROPERTY in properties
 
 
 def test_build_candidate_uses_latest_source_timestamp_for_last_updated() -> None:
@@ -273,17 +279,20 @@ def test_build_candidate_uses_latest_source_timestamp_for_last_updated() -> None
             "map_resolved_at": datetime(2026, 3, 26, 9, 0, tzinfo=timezone.utc),
             "details_resolved_at": datetime(2026, 3, 27, 7, 0, tzinfo=timezone.utc),
             "pricing_resolved_at": datetime(2026, 3, 27, 6, 0, tzinfo=timezone.utc),
+            "decision_updated_at": datetime(2026, 3, 28, 6, 0, tzinfo=timezone.utc),
+            "decision_status": "booked",
         }
     )
 
     assert candidate.last_updated_at == datetime(
         2026,
         3,
-        27,
-        7,
+        28,
+        6,
         0,
         tzinfo=timezone.utc,
     )
+    assert candidate.decision_status == "booked"
 
 
 def test_sync_document_recreates_page_when_existing_page_belongs_to_other_data_source() -> None:

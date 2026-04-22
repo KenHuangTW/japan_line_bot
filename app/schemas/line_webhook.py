@@ -20,6 +20,12 @@ class LineMessage(BaseModel):
     text: str = ""
 
 
+class LinePostback(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    data: str = ""
+
+
 class LineWebhookEvent(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -29,6 +35,7 @@ class LineWebhookEvent(BaseModel):
     timestamp: int | None = None
     source: LineEventSource = Field(default_factory=LineEventSource)
     message: LineMessage = Field(default_factory=LineMessage)
+    postback: LinePostback = Field(default_factory=LinePostback)
 
 
 class LineWebhookRequest(BaseModel):

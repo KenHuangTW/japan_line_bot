@@ -3,12 +3,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import parse_qs
 
 from app.config import Settings
 from app.controllers.integration.line_client import LineClient
 from app.controllers.repositories.captured_link_repository import CapturedLinkRepository
 from app.controllers.repositories.trip_repository import TripRepository
 from app.link_extractor import extract_lodging_links
+from app.lodging_links import LodgingLinkService
+from app.lodging_links.common import build_lodging_lookup_keys
 from app.lodging_summary import (
     DecisionSummaryService,
     LodgingDecisionSummaryConfigurationError,
@@ -16,15 +19,18 @@ from app.lodging_summary import (
     LodgingDecisionSummaryError,
     build_line_lodging_decision_summary,
 )
-from app.lodging_links import LodgingLinkService
-from app.lodging_links.common import build_lodging_lookup_keys
 from app.map_enrichment import (
     LodgingMapEnrichmentService,
     MapEnrichmentRepository,
     retry_all_map_enrichment_documents,
     run_map_enrichment_job,
 )
-from app.models import CapturedLodgingLink, LineTrip, LodgingLinkMatch
+from app.models import (
+    CapturedLodgingLink,
+    LineTrip,
+    LodgingDecisionStatus,
+    LodgingLinkMatch,
+)
 from app.notion_sync import (
     NotionSyncRepository,
     NotionSyncSourceScope,
@@ -63,6 +69,7 @@ TRIP_CAPTURE_REQUIRED_MESSAGE = (
 SUMMARY_FEATURE_UNAVAILABLE_MESSAGE = "AI 摘要尚未設定完成。"
 SUMMARY_EMPTY_TRIP_MESSAGE = "目前旅次還沒有住宿資料可摘要，請先貼住宿連結。"
 SUMMARY_FAILED_MESSAGE = "目前無法產生住宿摘要，請稍後再試。"
+LODGING_DECISION_FAILED_MESSAGE = "找不到這筆住宿，可能已不在目前旅次。"
 LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (HELP_COMMAND, "顯示目前支援的指令與說明"),
     (PING_COMMAND, "回覆 pong"),
@@ -404,7 +411,9 @@ def _run_trip_create_command(
     if existing_trip is not None:
         if existing_trip.is_active:
             return f"目前旅次已經是：{existing_trip.title}"
-        switched_trip = trip_repository.switch_active_trip(chat_scope, existing_trip.title)
+        switched_trip = trip_repository.switch_active_trip(
+            chat_scope, existing_trip.title
+        )
         if switched_trip is None:
             return f"找不到旅次：{existing_trip.title}"
         return f"旅次已存在，已切換到：{switched_trip.title}"
@@ -457,11 +466,7 @@ def _run_trip_current_command(
     if error_message is not None:
         return error_message
     assert trip is not None
-    return (
-        f"目前旅次：{trip.title}\n"
-        f"旅次 ID：{trip.trip_id}\n"
-        "狀態：進行中"
-    )
+    return f"目前旅次：{trip.title}\n" f"旅次 ID：{trip.trip_id}\n" "狀態：進行中"
 
 
 def _run_trip_archive_command(
@@ -589,7 +594,9 @@ async def _run_notion_sync_command(
                 or not resolved_service.service.is_sync_configured
             ):
                 return "Notion sync 尚未設定完成。"
-        elif resolved_service is None or not resolved_service.service.is_sync_configured:
+        elif (
+            resolved_service is None or not resolved_service.service.is_sync_configured
+        ):
             return "Notion sync 尚未設定完成。"
         await _run_lodging_enrichment_before_notion_sync(
             repository=map_enrichment_repository,
@@ -716,8 +723,7 @@ def _format_help_message() -> str:
         "\n"
         "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
         "\n"
-        "指令列表：\n"
-        + "\n".join(command_lines)
+        "指令列表：\n" + "\n".join(command_lines)
     )
 
 
@@ -810,6 +816,110 @@ def _resolve_target_source(
     )
 
 
+async def _handle_line_postback(
+    *,
+    data: str,
+    source: LineEventSource,
+    reply_token: str | None,
+    settings: Settings,
+    line_client: LineClient,
+    repository: CapturedLinkRepository,
+    trip_repository: TripRepository | None,
+) -> bool:
+    params = parse_qs(data, keep_blank_values=True)
+    action = _first_postback_value(params, "action")
+    if action != "lodging_decision":
+        return False
+
+    decision_status = _parse_lodging_decision_status(
+        _first_postback_value(params, "decision_status")
+    )
+    document_id = _first_postback_value(params, "document_id")
+    if decision_status is None or not document_id:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=LODGING_DECISION_FAILED_MESSAGE,
+        )
+        return True
+
+    target_source = _resolve_target_source(settings=settings, source=source)
+    _, active_trip, error_message = _resolve_active_trip_scope(
+        source=target_source,
+        trip_repository=trip_repository,
+        action_label="更新住宿狀態",
+    )
+    if error_message is not None:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=error_message,
+        )
+        return True
+
+    assert active_trip is not None
+    lodging = repository.update_decision_status(
+        document_id,
+        decision_status=decision_status,
+        source_type=target_source.type,
+        trip_id=active_trip.trip_id,
+        group_id=target_source.groupId,
+        room_id=target_source.roomId,
+        user_id=target_source.userId,
+        updated_by_user_id=source.userId,
+    )
+    if lodging is None:
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=LODGING_DECISION_FAILED_MESSAGE,
+        )
+        return True
+
+    await _reply_if_possible(
+        settings=settings,
+        line_client=line_client,
+        reply_token=reply_token,
+        text=_format_lodging_decision_reply(
+            lodging=lodging,
+            decision_status=decision_status,
+        ),
+    )
+    return True
+
+
+def _first_postback_value(
+    params: dict[str, list[str]],
+    key: str,
+) -> str | None:
+    values = params.get(key)
+    if not values:
+        return None
+    return values[0].strip() or None
+
+
+def _parse_lodging_decision_status(value: str | None) -> LodgingDecisionStatus | None:
+    if value in {"candidate", "booked", "dismissed"}:
+        return value  # type: ignore[return-value]
+    return None
+
+
+def _format_lodging_decision_reply(
+    *,
+    lodging: CapturedLodgingLink,
+    decision_status: LodgingDecisionStatus,
+) -> str:
+    display_name = lodging.property_name or lodging.resolved_url or lodging.url
+    if decision_status == "booked":
+        return f"已標記為已預訂：{display_name}"
+    if decision_status == "dismissed":
+        return f"已移出候選：{display_name}"
+    return f"已改回候選：{display_name}"
+
+
 async def process_events(
     payload: LineWebhookRequest,
     settings: Settings,
@@ -839,6 +949,19 @@ async def process_events(
                 settings.line_welcome_message,
             )
             continue
+
+        if event_type == "postback":
+            handled = await _handle_line_postback(
+                data=event.postback.data,
+                source=event.source,
+                reply_token=reply_token,
+                settings=settings,
+                line_client=line_client,
+                repository=repository,
+                trip_repository=trip_repository,
+            )
+            if handled:
+                continue
 
         if event_type != "message" or event.message.type != "text":
             continue
@@ -879,9 +1002,11 @@ async def process_events(
                 settings=settings,
                 line_client=line_client,
                 reply_token=reply_token,
-                text=TRIP_CAPTURE_REQUIRED_MESSAGE
-                if trip_error_message == TRIP_REQUIRED_MESSAGE
-                else trip_error_message,
+                text=(
+                    TRIP_CAPTURE_REQUIRED_MESSAGE
+                    if trip_error_message == TRIP_REQUIRED_MESSAGE
+                    else trip_error_message
+                ),
             )
             continue
         assert trip_scope is not None

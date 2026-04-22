@@ -15,6 +15,11 @@ class FakeInsertManyResult:
         self.inserted_ids = list(range(count))
 
 
+class FakeUpdateOneResult:
+    def __init__(self, matched_count: int) -> None:
+        self.matched_count = matched_count
+
+
 class FakeCollection:
     def __init__(self) -> None:
         self.documents: list[dict[str, object]] = []
@@ -48,6 +53,22 @@ class FakeCollection:
         return [
             document for document in self.documents if _matches_fake_query(document, query)
         ]
+
+    def update_one(
+        self,
+        filter: dict[str, object],
+        update: dict[str, object],
+        *args,
+        **kwargs,
+    ) -> FakeUpdateOneResult:
+        for document in self.documents:
+            if not _matches_fake_query(document, filter):
+                continue
+            set_values = update.get("$set")
+            if isinstance(set_values, dict):
+                document.update(set_values)
+            return FakeUpdateOneResult(1)
+        return FakeUpdateOneResult(0)
 
 
 class FakeDatabase:
@@ -266,6 +287,55 @@ def test_mongo_captured_link_repository_isolates_duplicates_by_trip() -> None:
 
     assert duplicate is not None
     assert duplicate.trip_id == "trip-b"
+
+
+def test_mongo_captured_link_repository_updates_decision_status_with_scope() -> None:
+    collection = FakeCollection()
+    repository = MongoCapturedLinkRepository(collection)
+    collection.documents.append(
+        _sample_link("https://www.booking.com/hotel/jp/foo.html")
+        .model_copy(update={"trip_id": "trip-a", "trip_title": "Trip A"})
+        .model_dump(mode="python")
+        | {"_id": "doc-1"}
+    )
+
+    updated = repository.update_decision_status(
+        "doc-1",
+        decision_status="booked",
+        source_type="group",
+        trip_id="trip-a",
+        group_id="Cgroup123",
+        updated_by_user_id="Uuser123",
+    )
+
+    assert updated is not None
+    assert updated.decision_status == "booked"
+    assert updated.decision_updated_at is not None
+    assert updated.decision_updated_by_user_id == "Uuser123"
+    assert updated.notion_sync_status == "pending"
+
+
+def test_mongo_captured_link_repository_rejects_decision_update_outside_scope() -> None:
+    collection = FakeCollection()
+    repository = MongoCapturedLinkRepository(collection)
+    collection.documents.append(
+        _sample_link("https://www.booking.com/hotel/jp/foo.html")
+        .model_copy(update={"trip_id": "trip-a", "trip_title": "Trip A"})
+        .model_dump(mode="python")
+        | {"_id": "doc-1"}
+    )
+
+    updated = repository.update_decision_status(
+        "doc-1",
+        decision_status="booked",
+        source_type="group",
+        trip_id="trip-other",
+        group_id="Cgroup123",
+        updated_by_user_id="Uuser123",
+    )
+
+    assert updated is None
+    assert collection.documents[0]["decision_status"] == "candidate"
 
 
 def test_create_collector_uses_mongo_backend() -> None:

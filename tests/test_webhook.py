@@ -158,6 +158,42 @@ class InMemoryCapturedLinkRepository:
 
         return min(matches, key=lambda item: (len(item.url), -item.captured_at.timestamp()))
 
+    def update_decision_status(
+        self,
+        document_id: str,
+        *,
+        decision_status,
+        source_type: str,
+        trip_id: str | None = None,
+        group_id: str | None = None,
+        room_id: str | None = None,
+        user_id: str | None = None,
+        updated_by_user_id: str | None = None,
+    ) -> CapturedLodgingLink | None:
+        for index, item in enumerate(self.items, start=1):
+            if document_id != f"doc-{index}":
+                continue
+            if not _matches_captured_source(
+                item,
+                source_type=source_type,
+                trip_id=trip_id,
+                group_id=group_id,
+                room_id=room_id,
+                user_id=user_id,
+            ):
+                return None
+            updated = item.model_copy(
+                update={
+                    "decision_status": decision_status,
+                    "decision_updated_at": datetime.now(timezone.utc),
+                    "decision_updated_by_user_id": updated_by_user_id,
+                    "notion_sync_status": "pending",
+                }
+            )
+            self.items[index - 1] = updated
+            return updated
+        return None
+
 
 class InMemoryTripRepository:
     def __init__(self, trips: Sequence[LineTrip] | None = None) -> None:
@@ -964,6 +1000,36 @@ def _build_payload(
                     "id": "325708",
                     "type": "text",
                     "text": message_text,
+                },
+            }
+        ],
+    }
+
+
+def _build_postback_payload(
+    data: str,
+    *,
+    source_type: str = "group",
+    group_id: str | None = "Cgroup123",
+    room_id: str | None = None,
+    user_id: str | None = "Uuser123",
+) -> dict[str, object]:
+    return {
+        "destination": "Ubot",
+        "events": [
+            {
+                "type": "postback",
+                "replyToken": "reply-token",
+                "mode": "active",
+                "timestamp": 1711111111111,
+                "source": {
+                    "type": source_type,
+                    "groupId": group_id,
+                    "roomId": room_id,
+                    "userId": user_id,
+                },
+                "postback": {
+                    "data": data,
                 },
             }
         ],
@@ -2505,17 +2571,21 @@ def test_line_webhook_replies_trip_preview_for_list_command() -> None:
     assert len(messages) == 1
     flex = messages[0]
     assert flex["type"] == "flex"
-    assert flex["altText"] == "東京 2026：2 筆候選住宿，可訂 1 筆，請開啟旅次詳情查看完整清單。"
+    assert flex["altText"] == "東京 2026：已訂 0 筆，候選 2 筆，請開啟旅次詳情查看完整清單。"
     assert flex["contents"]["type"] == "carousel"
     bubbles = flex["contents"]["contents"]
     assert len(bubbles) == 2
     assert bubbles[0]["hero"]["url"] == "https://cdn.example.com/foo.jpg"
     assert bubbles[0]["body"]["contents"][0]["text"] == "Foo Hotel"
+    assert bubbles[0]["body"]["contents"][0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
     assert bubbles[1]["body"]["contents"][0]["text"] == "Bar Hotel"
     first_footer = bubbles[0]["footer"]["contents"]
-    assert first_footer[0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
+    assert first_footer[0]["action"]["type"] == "postback"
+    assert first_footer[0]["action"]["label"] == "已訂這間"
+    assert "decision_status=booked" in first_footer[0]["action"]["data"]
     assert first_footer[1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
     assert len(first_footer) == 2
+    assert "不考慮這間" not in json.dumps(flex, ensure_ascii=False)
 
 
 def test_line_webhook_control_group_list_command_reads_target_group_trip() -> None:
@@ -2588,6 +2658,7 @@ def test_line_webhook_control_group_list_command_reads_target_group_trip() -> No
     flex = messages[0]
     bubble = flex["contents"]["contents"][0]
     assert bubble["body"]["contents"][0]["text"] == "Foo Hotel"
+    assert bubble["footer"]["contents"][0]["action"]["label"] == "已訂這間"
     assert bubble["footer"]["contents"][1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
 
 
@@ -2647,10 +2718,186 @@ def test_line_webhook_list_command_works_without_notion_target() -> None:
     assert flex["contents"]["type"] == "carousel"
     bubble = flex["contents"]["contents"][0]
     assert bubble["hero"]["url"] == "https://cdn.example.com/foo.jpg"
-    assert bubble["footer"]["contents"][0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
+    assert bubble["body"]["contents"][0]["action"]["uri"] == "https://www.booking.com/hotel/jp/foo.html"
+    assert bubble["footer"]["contents"][0]["action"]["label"] == "已訂這間"
     assert bubble["footer"]["contents"][1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
     assert len(bubble["footer"]["contents"]) == 2
     assert "Foo Hotel" in json.dumps(flex, ensure_ascii=False)
+
+
+def test_line_webhook_list_command_renders_booked_revert_action() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    display_items = [
+        _build_captured_link("https://www.booking.com/hotel/jp/foo.html").model_copy(
+            update={
+                "property_name": "Foo Hotel",
+                "decision_status": "booked",
+                "is_sold_out": False,
+            }
+        ),
+    ]
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            trip_display_repository=_build_trip_display_repository(display_items),
+        )
+    )
+
+    payload = _build_payload("/清單")
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    _, messages = _single_message_call(fake_line_client)
+    bubble = messages[0]["contents"]["contents"][0]
+    assert "已預訂" in json.dumps(bubble, ensure_ascii=False)
+    assert bubble["footer"]["contents"][0]["action"]["label"] == "改回候選"
+    assert "decision_status=candidate" in bubble["footer"]["contents"][0]["action"]["data"]
+
+
+def test_line_webhook_lodging_decision_postback_marks_booked() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    repository.items.append(
+        _build_captured_link("https://www.booking.com/hotel/jp/foo.html").model_copy(
+            update={"property_name": "Foo Hotel"}
+        )
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+        )
+    )
+
+    payload = _build_postback_payload(
+        "action=lodging_decision&document_id=doc-1&decision_status=booked"
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "captured": 0}
+    assert repository.items[0].decision_status == "booked"
+    assert repository.items[0].decision_updated_by_user_id == "Uuser123"
+    assert fake_line_client.calls == [("reply-token", "已標記為已預訂：Foo Hotel")]
+
+
+def test_line_webhook_lodging_decision_postback_reverts_to_candidate() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    repository.items.append(
+        _build_captured_link("https://www.booking.com/hotel/jp/foo.html").model_copy(
+            update={"property_name": "Foo Hotel", "decision_status": "booked"}
+        )
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+        )
+    )
+
+    payload = _build_postback_payload(
+        "action=lodging_decision&document_id=doc-1&decision_status=candidate"
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert repository.items[0].decision_status == "candidate"
+    assert fake_line_client.calls == [("reply-token", "已改回候選：Foo Hotel")]
+
+
+def test_line_webhook_lodging_decision_postback_rejects_out_of_scope_document() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    repository = InMemoryCapturedLinkRepository()
+    repository.items.append(
+        _build_captured_link(
+            "https://www.booking.com/hotel/jp/foo.html",
+            group_id="Cother123",
+        ).model_copy(update={"property_name": "Foo Hotel"})
+    )
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=repository,
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+        )
+    )
+
+    payload = _build_postback_payload(
+        "action=lodging_decision&document_id=doc-1&decision_status=booked"
+    )
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+
+    response = client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert repository.items[0].decision_status == "candidate"
+    assert fake_line_client.calls == [
+        ("reply-token", "找不到這筆住宿，可能已不在目前旅次。")
+    ]
 
 
 def test_line_webhook_list_command_falls_back_to_text_when_flex_reply_fails() -> None:
@@ -2703,9 +2950,9 @@ def test_line_webhook_list_command_falls_back_to_text_when_flex_reply_fails() ->
             "reply-token",
             (
                 "目前旅次：東京 2026\n"
-                "候選住宿 1 筆（可訂 1 / 已售完 0 / 待確認 0）\n"
+                "住宿 1 筆（已訂 0 / 候選 1 / 不考慮 0）\n"
                 "1. Foo Hotel\n"
-                "Booking.com｜TWD 3,500｜可訂\n"
+                "Booking.com｜TWD 3,500｜可訂｜候選中\n"
                 "\n"
                 "旅次詳情：http://testserver/trips/trip-display-current"
             ),
@@ -2748,7 +2995,17 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
                 "is_sold_out": True,
             }
         ),
+        _build_captured_link(
+            "https://www.airbnb.com/rooms/123",
+            captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+        ).model_copy(
+            update={
+                "property_name": "Dismissed Home",
+                "decision_status": "dismissed",
+            }
+        ),
     ]
+    repository.items.extend(display_items)
     client = TestClient(
         create_app(
             settings=settings,
@@ -2767,14 +3024,34 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
     assert response.status_code == 200
     assert "Foo Hotel" in response.text
     assert "Bar Hotel" in response.text
+    assert "Dismissed Home" not in response.text
     assert "開啟 Notion 匯出" in response.text
     assert "東京新宿區" in response.text
+    assert "不考慮這間" in response.text
 
     filtered = client.get("/trips/trip-display-current", params={"availability": "available"})
 
     assert filtered.status_code == 200
     assert "Foo Hotel" in filtered.text
     assert "Bar Hotel" not in filtered.text
+
+    dismissed = client.get(
+        "/trips/trip-display-current",
+        params={"decision_status": "dismissed"},
+    )
+
+    assert dismissed.status_code == 200
+    assert "Dismissed Home" in dismissed.text
+    assert "改回候選" in dismissed.text
+
+    update_response = client.post(
+        "/trips/trip-display-current/lodgings/doc-1/decision",
+        data={"decision_status": "dismissed"},
+        follow_redirects=False,
+    )
+
+    assert update_response.status_code == 303
+    assert repository.items[0].decision_status == "dismissed"
 
 
 def test_line_webhook_trip_detail_page_rejects_invalid_token() -> None:

@@ -341,7 +341,7 @@ curl http://127.0.0.1:8000/healthz
 | `/切換旅次 <名稱>` | 切換到同一聊天室內既有、未封存的旅次。 |
 | `/目前旅次` | 查看目前啟用中的旅次名稱與旅次 ID。 |
 | `/封存旅次` | 封存目前旅次，並清空 active trip。 |
-| `/清單` | 回傳目前旅次的 LINE Flex carousel；每筆候選住宿一張卡片，並附上旅次詳情頁與可用時的 Notion 匯出捷徑。 |
+| `/清單` | 回傳目前旅次的 LINE Flex carousel；每張卡片可點圖文開房源，並提供 `已訂這間` / `改回候選` 與旅次詳情入口。 |
 | `/摘要` | 根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。 |
 | `/整理` | 只針對目前旅次範圍，先跑 lodging enrichment，再同步 pending / failed / 有更新的資料到 Notion。 |
 | `/全部重來` | 只針對目前旅次範圍，忽略既有同步狀態，先重跑 enrichment，再強制同步所有資料到 Notion；若有預設 Notion parent page，也會自動建立該旅次的 target。 |
@@ -350,6 +350,7 @@ curl http://127.0.0.1:8000/healthz
 
 - 貼住宿連結前必須先有 active trip，否則 bot 只會回覆旅次建立 / 切換提示，不會收錄資料。
 - `/清單`、`/摘要`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
+- `已訂這間`、`改回候選`、`不考慮這間` 都是使用者決策狀態；這和來源網站解析出的 `可訂`、`已售完`、`待確認` 是兩組不同資訊。
 - Notion target 未設定完成時，`/清單` 仍可正常顯示 Mongo preview 與旅次頁，但不會出現 Notion 匯出捷徑；`/整理`、`/全部重來` 仍需要 Notion sync 設定。
 - `GEMINI_API_KEY` 未設定時，`/摘要` 會回覆 `AI 摘要尚未設定完成。`。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，指令仍會執行，但 bot 無法回覆訊息。
@@ -388,12 +389,14 @@ response：
 
 | Method | Path | 說明 |
 | --- | --- | --- |
-| `GET` | `/trips/{display_token}` | 手機友善的只讀旅次頁，直接從 Mongo 顯示候選住宿，支援 `platform`、`availability`、`sort` query 參數。 |
+| `GET` | `/trips/{display_token}` | 手機友善的旅次頁，直接從 Mongo 顯示住宿，支援 `platform`、`availability`、`decision_status`、`sort` query 參數。 |
+| `POST` | `/trips/{display_token}/lodgings/{document_id}/decision` | 從旅次頁更新單筆住宿決策狀態，可用於 `不考慮這間` 或 `改回候選`。 |
 
 行為說明：
 
 - `display_token` 是穩定的旅次分享 token，不會暴露 raw `group_id` / `room_id` / `user_id`。
-- token 有效時，頁面會顯示住宿名稱、平台、價格、可訂狀態、地圖連結與 Notion 匯出捷徑（若該旅次有 target）。
+- token 有效時，頁面會顯示住宿名稱、平台、價格、可訂狀態、使用者決策狀態、地圖連結與 Notion 匯出捷徑（若該旅次有 target）。
+- 預設會顯示 `候選中` 與 `已預訂`，隱藏 `不考慮`；需要整理或復原時可用 `decision_status=dismissed` 篩選。
 - token 無效時，會回 `404 Invalid trip display link.`。
 
 ### 4. Lodging enrichment API
@@ -543,13 +546,14 @@ setup 成功後會回傳：
 
 ### Notion data source 欄位
 
-setup 後會收斂成以下 7 個欄位：
+setup 後會收斂成以下 8 個欄位：
 
 - `名稱`
 - `平台`
 - `房源URL`
 - `Google 地圖 URL`
 - `設施`
+- `決策狀態`
 - `最後更新時間`
 - `ID`
 
@@ -745,6 +749,14 @@ https://<your-domain>/webhooks/line
 - `pricing_retry_count`
 - `pricing_last_attempt_at`
 - `pricing_resolved_at`
+
+### 住宿決策狀態
+
+- `decision_status`
+- `decision_updated_at`
+- `decision_updated_by_user_id`
+
+`decision_status` 預設為 `candidate`，可被使用者改成 `booked` 或 `dismissed`。這是旅次討論中的主觀決策，不代表來源平台的供應狀態；來源平台狀態仍由 `is_sold_out` / `availability_source` 表示。
 
 ### Notion sync 狀態
 

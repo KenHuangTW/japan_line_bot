@@ -109,6 +109,9 @@ class NotionSyncDocumentResponse(NotionSourceScopeFields):
     map_status: str | None = None
     details_status: str | None = None
     pricing_status: str | None = None
+    decision_status: str = "candidate"
+    decision_updated_at: datetime | None = None
+    decision_updated_by_user_id: str | None = None
     notion_page_id: str | None = None
     notion_page_url: str | None = None
     notion_sync_status: str = "pending"
