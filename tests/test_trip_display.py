@@ -126,6 +126,9 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
     assert surface.total_lodgings == 2
     assert surface.available_count == 1
     assert surface.sold_out_count == 1
+    assert surface.candidate_count == 2
+    assert surface.booked_count == 0
+    assert surface.dismissed_count == 0
     assert surface.notion_export_url == "https://www.notion.so/public-trip-lodgings"
     assert [lodging.display_name for lodging in surface.lodgings] == [
         "Foo Hotel",
@@ -133,7 +136,9 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
     ]
     summary_payload = surface.to_summary_payload()
     assert summary_payload["summary"]["total_lodgings"] == 2
+    assert summary_payload["summary"]["candidate_count"] == 2
     assert summary_payload["lodgings"][0]["display_name"] == "Foo Hotel"
+    assert summary_payload["lodgings"][0]["decision_status"] == "candidate"
     assert summary_payload["lodgings"][0]["hero_image_url"] == "https://cdn.example.com/foo.jpg"
     assert (
         summary_payload["lodgings"][0]["line_hero_image_url"]
@@ -189,3 +194,71 @@ def test_mongo_trip_display_repository_filters_without_notion_target() -> None:
     assert surface.visible_count == 1
     assert surface.lodgings[0].display_name == "Foo Hotel"
     assert surface.platform_options == ("airbnb", "booking")
+
+
+def test_mongo_trip_display_repository_filters_decision_status() -> None:
+    trip = LineTrip(
+        trip_id="trip-3",
+        display_token="trip-display-token-3",
+        title="大阪 2026",
+        source_type="group",
+        group_id="Cgroup123",
+    )
+    repository = MongoTripDisplayRepository(
+        FakeCollection(
+            [
+                {
+                    "_id": "doc-1",
+                    "platform": "booking",
+                    "url": "https://www.booking.com/hotel/jp/foo.html",
+                    "property_name": "Booked Hotel",
+                    "decision_status": "booked",
+                    "captured_at": datetime(2026, 4, 3, tzinfo=timezone.utc),
+                    "source_type": "group",
+                    "group_id": "Cgroup123",
+                    "trip_id": "trip-3",
+                },
+                {
+                    "_id": "doc-2",
+                    "platform": "agoda",
+                    "url": "https://www.agoda.com/bar.html",
+                    "property_name": "Candidate Hotel",
+                    "captured_at": datetime(2026, 4, 2, tzinfo=timezone.utc),
+                    "source_type": "group",
+                    "group_id": "Cgroup123",
+                    "trip_id": "trip-3",
+                },
+                {
+                    "_id": "doc-3",
+                    "platform": "airbnb",
+                    "url": "https://www.airbnb.com/rooms/1",
+                    "property_name": "Dismissed Home",
+                    "decision_status": "dismissed",
+                    "captured_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
+                    "source_type": "group",
+                    "group_id": "Cgroup123",
+                    "trip_id": "trip-3",
+                },
+            ]
+        )
+    )
+
+    surface = repository.build_trip_display(trip, TripDisplayFilters())
+
+    assert surface.total_lodgings == 3
+    assert surface.visible_count == 2
+    assert surface.booked_count == 1
+    assert surface.candidate_count == 1
+    assert surface.dismissed_count == 1
+    assert [lodging.display_name for lodging in surface.lodgings] == [
+        "Booked Hotel",
+        "Candidate Hotel",
+    ]
+
+    dismissed = repository.build_trip_display(
+        trip,
+        TripDisplayFilters(decision_status="dismissed"),
+    )
+
+    assert dismissed.visible_count == 1
+    assert dismissed.lodgings[0].display_name == "Dismissed Home"

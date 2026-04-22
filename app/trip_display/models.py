@@ -4,7 +4,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+from app.models import LodgingDecisionStatus
+
 TripDisplayAvailability = Literal["all", "available", "sold_out", "unknown"]
+TripDisplayDecisionStatus = Literal[
+    "active",
+    "all",
+    "candidate",
+    "booked",
+    "dismissed",
+]
 TripDisplaySort = Literal[
     "captured_desc",
     "captured_asc",
@@ -17,6 +26,7 @@ TripDisplaySort = Literal[
 class TripDisplayFilters:
     platform: str | None = None
     availability: TripDisplayAvailability = "all"
+    decision_status: TripDisplayDecisionStatus = "active"
     sort: TripDisplaySort = "captured_desc"
 
 
@@ -38,6 +48,9 @@ class TripDisplayLodging:
     google_maps_url: str | None = None
     google_maps_search_url: str | None = None
     notion_page_url: str | None = None
+    decision_status: LodgingDecisionStatus = "candidate"
+    decision_updated_at: datetime | None = None
+    decision_updated_by_user_id: str | None = None
     captured_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -71,6 +84,15 @@ class TripDisplayLodging:
         return labels[self.availability_key]
 
     @property
+    def decision_status_label(self) -> str:
+        labels = {
+            "candidate": "候選中",
+            "booked": "已預訂",
+            "dismissed": "不考慮",
+        }
+        return labels[self.decision_status]
+
+    @property
     def price_label(self) -> str:
         if self.price_amount is None or not self.price_currency:
             return "價格待確認"
@@ -89,6 +111,9 @@ class TripDisplaySurface:
     available_count: int
     sold_out_count: int
     unknown_count: int
+    candidate_count: int = 0
+    booked_count: int = 0
+    dismissed_count: int = 0
     notion_export_url: str | None = None
     generated_at: datetime | None = None
     platform_options: tuple[str, ...] = ()
@@ -108,6 +133,7 @@ class TripDisplaySurface:
             "filters": {
                 "platform": self.filters.platform,
                 "availability": self.filters.availability,
+                "decision_status": self.filters.decision_status,
                 "sort": self.filters.sort,
             },
             "summary": {
@@ -116,6 +142,9 @@ class TripDisplaySurface:
                 "available_count": self.available_count,
                 "sold_out_count": self.sold_out_count,
                 "unknown_count": self.unknown_count,
+                "candidate_count": self.candidate_count,
+                "booked_count": self.booked_count,
+                "dismissed_count": self.dismissed_count,
                 "notion_export_url": self.notion_export_url,
             },
             "lodgings": [
@@ -133,6 +162,7 @@ class TripDisplaySurface:
                     "price_currency": lodging.price_currency,
                     "availability": lodging.availability_key,
                     "is_sold_out": lodging.is_sold_out,
+                    "decision_status": lodging.decision_status,
                     "amenities": list(lodging.amenities),
                     "maps_url": lodging.maps_url,
                     "notion_page_url": lodging.notion_page_url,

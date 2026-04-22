@@ -62,8 +62,7 @@ class LodgingMapEnrichmentService:
     async def enrich(self, url: str) -> EnrichedLodgingMap | None:
         target_url = await self._resolve_target_url(url)
         html = await self.fetcher.fetch(target_url)
-        hero_image_url = extract_lodging_hero_image_url(html, base_url=target_url)
-        line_hero_image_url = normalize_line_image_url(hero_image_url)
+        html_hero_image_url = extract_lodging_hero_image_url(html, base_url=target_url)
         parsed = parse_lodging_map(html)
         agoda_parsed = await self._parse_agoda_secondary_data(target_url, html)
         parsed = _merge_candidates(parsed, agoda_parsed)
@@ -76,6 +75,8 @@ class LodgingMapEnrichmentService:
         if parsed is None:
             return None
         parsed = localize_parsed_lodging_map(parsed)
+        hero_image_url = html_hero_image_url or parsed.hero_image_url
+        line_hero_image_url = normalize_line_image_url(hero_image_url)
         (
             price_amount,
             price_currency,
@@ -239,6 +240,7 @@ def _merge_candidates(
 
     return ParsedLodgingMap(
         property_name=preferred.property_name or fallback.property_name,
+        hero_image_url=preferred.hero_image_url or fallback.hero_image_url,
         formatted_address=preferred.formatted_address or fallback.formatted_address,
         street_address=preferred.street_address or fallback.street_address,
         district=preferred.district or fallback.district,

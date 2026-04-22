@@ -113,6 +113,14 @@ class MongoNotionSyncRepository:
                             ]
                         }
                     },
+                    {
+                        "$expr": {
+                            "$gt": [
+                                {"$ifNull": ["$decision_updated_at", epoch]},
+                                last_synced_expr,
+                            ]
+                        }
+                    },
                 ]
             },
             limit=limit,
@@ -190,6 +198,9 @@ class MongoNotionSyncRepository:
                     map_status=item.get("map_status"),
                     details_status=item.get("details_status"),
                     pricing_status=item.get("pricing_status"),
+                    decision_status=_resolve_decision_status(item.get("decision_status")),
+                    decision_updated_at=item.get("decision_updated_at"),
+                    decision_updated_by_user_id=item.get("decision_updated_by_user_id"),
                     notion_page_id=item.get("notion_page_id"),
                     notion_page_url=item.get("notion_page_url"),
                     notion_database_id=item.get("notion_database_id"),
@@ -291,6 +302,9 @@ def _build_candidate(document: dict[str, Any]) -> NotionSyncCandidate:
         map_status=document.get("map_status"),
         details_status=document.get("details_status"),
         pricing_status=document.get("pricing_status"),
+        decision_status=_resolve_decision_status(document.get("decision_status")),
+        decision_updated_at=document.get("decision_updated_at"),
+        decision_updated_by_user_id=document.get("decision_updated_by_user_id"),
         captured_at=document.get("captured_at"),
         last_updated_at=_resolve_last_updated_at(document),
         source_type=document.get("source_type"),
@@ -325,12 +339,21 @@ def _resolve_last_updated_at(document: dict[str, Any]) -> datetime | None:
             document.get("map_resolved_at"),
             document.get("details_resolved_at"),
             document.get("pricing_resolved_at"),
+            document.get("decision_updated_at"),
         )
         if isinstance(value, datetime)
     ]
     if not timestamps:
         return None
     return max(timestamps)
+
+
+def _resolve_decision_status(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"candidate", "booked", "dismissed"}:
+            return normalized
+    return "candidate"
 
 
 def _apply_source_scope_query(

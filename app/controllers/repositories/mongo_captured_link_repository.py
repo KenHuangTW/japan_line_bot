@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Protocol, Sequence
 
 from app.lodging_links.common import build_equivalent_lodging_url_pattern
-from app.models import CapturedLodgingLink
+from app.models import CapturedLodgingLink, LodgingDecisionStatus
 
 
 class InsertManyResult(Protocol):
     inserted_ids: Sequence[Any]
+
+
+class UpdateOneResult(Protocol):
+    matched_count: int
 
 
 class MongoCollection(Protocol):
@@ -23,6 +28,14 @@ class MongoCollection(Protocol):
         *args: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | None: ...
+
+    def update_one(
+        self,
+        filter: dict[str, Any],
+        update: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> UpdateOneResult: ...
 
 
 class MongoCapturedLinkRepository:
@@ -70,6 +83,54 @@ class MongoCapturedLinkRepository:
         if duplicate is None:
             return None
         return CapturedLodgingLink.model_validate(duplicate)
+
+    def update_decision_status(
+        self,
+        document_id: str,
+        *,
+        decision_status: LodgingDecisionStatus,
+        source_type: str,
+        trip_id: str | None = None,
+        group_id: str | None = None,
+        room_id: str | None = None,
+        user_id: str | None = None,
+        updated_by_user_id: str | None = None,
+    ) -> CapturedLodgingLink | None:
+        document_key = _coerce_document_id(document_id)
+        if document_key is None:
+            return None
+
+        query = {
+            "$and": [
+                {"_id": document_key},
+                _build_source_scope_query(
+                    source_type=source_type,
+                    trip_id=trip_id,
+                    group_id=group_id,
+                    room_id=room_id,
+                    user_id=user_id,
+                ),
+            ]
+        }
+        now = datetime.now(timezone.utc)
+        result = self.collection.update_one(
+            query,
+            {
+                "$set": {
+                    "decision_status": decision_status,
+                    "decision_updated_at": now,
+                    "decision_updated_by_user_id": updated_by_user_id,
+                    "notion_sync_status": "pending",
+                }
+            },
+        )
+        if result.matched_count < 1:
+            return None
+
+        updated = self.collection.find_one(query)
+        if updated is None:
+            return None
+        return CapturedLodgingLink.model_validate(updated)
 
 
 def _build_duplicate_query(
@@ -143,3 +204,19 @@ def _build_source_scope_query(
         query["user_id"] = user_id
 
     return query
+
+
+def _coerce_document_id(document_id: str) -> Any | None:
+    normalized = str(document_id or "").strip()
+    if not normalized:
+        return None
+
+    try:
+        from bson import ObjectId
+    except ModuleNotFoundError:
+        return normalized
+
+    try:
+        return ObjectId(normalized)
+    except Exception:
+        return normalized

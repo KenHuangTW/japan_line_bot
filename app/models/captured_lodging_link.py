@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 MapStatus = Literal["pending", "resolved", "partial", "failed"]
 SyncStatus = Literal["pending", "synced", "failed"]
+LodgingDecisionStatus = Literal["candidate", "booked", "dismissed"]
+LODGING_DECISION_STATUS_VALUES = {"candidate", "booked", "dismissed"}
 
 
 class LodgingLinkMatch(BaseModel):
@@ -303,8 +305,29 @@ class CapturedLodgingLink(BaseModel):
         default=None,
         description="最後一次成功同步到 Notion 的 UTC 時間。",
     )
+    decision_status: LodgingDecisionStatus = Field(
+        default="candidate",
+        description="使用者對這筆住宿的決策狀態：候選中、已預訂或不考慮。",
+    )
+    decision_updated_at: datetime | None = Field(
+        default=None,
+        description="最後一次更新住宿決策狀態的 UTC 時間。",
+    )
+    decision_updated_by_user_id: str | None = Field(
+        default=None,
+        description="最後一次更新住宿決策狀態的 LINE userId。",
+    )
     # Persist UTC timestamps so MongoDB documents stay comparable across environments.
     captured_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="系統完成擷取時的 UTC 時間。",
     )
+
+    @field_validator("decision_status", mode="before")
+    @classmethod
+    def _normalize_decision_status(cls, value: object) -> str:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in LODGING_DECISION_STATUS_VALUES:
+                return normalized
+        return "candidate"

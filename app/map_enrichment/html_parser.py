@@ -194,6 +194,7 @@ def _merge_html_sold_out_signal(
 
     return ParsedLodgingMap(
         property_name=candidate.property_name,
+        hero_image_url=candidate.hero_image_url,
         formatted_address=candidate.formatted_address,
         street_address=candidate.street_address,
         district=candidate.district,
