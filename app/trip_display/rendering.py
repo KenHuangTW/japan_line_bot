@@ -285,11 +285,59 @@ def build_trip_detail_html(
         margin-top: 18px;
       }}
       .card {{
-        padding: 18px;
+        display: grid;
+        grid-template-columns: minmax(180px, 30%) 1fr;
+        overflow: hidden;
+        padding: 0;
         border-radius: 22px;
         border: 1px solid var(--line);
         background: var(--card);
         box-shadow: 0 18px 42px rgba(48, 32, 18, 0.05);
+      }}
+      .card-media {{
+        min-height: 188px;
+        border-right: 1px solid var(--line);
+        background: linear-gradient(135deg, rgba(233,244,241,0.95), rgba(255,253,250,0.82));
+      }}
+      .card-media-link,
+      .card-thumbnail-fallback {{
+        display: flex;
+        width: 100%;
+        height: 100%;
+        min-height: 188px;
+        aspect-ratio: 4 / 3;
+      }}
+      .card-media-link {{
+        align-items: stretch;
+        color: inherit;
+        text-decoration: none;
+      }}
+      .card-thumbnail {{
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }}
+      .card-thumbnail-fallback {{
+        flex-direction: column;
+        justify-content: center;
+        gap: 8px;
+        padding: 18px;
+        color: var(--muted);
+      }}
+      .card-fallback-platform {{
+        color: var(--accent);
+        font-size: 0.82rem;
+        font-weight: 700;
+        text-transform: uppercase;
+      }}
+      .card-fallback-text {{
+        font-size: 0.95rem;
+        line-height: 1.4;
+      }}
+      .card-content {{
+        min-width: 0;
+        padding: 18px;
       }}
       .card-header {{
         display: flex;
@@ -365,6 +413,17 @@ def build_trip_detail_html(
       @media (max-width: 640px) {{
         main {{ padding-inline: 12px; }}
         .hero, form, .card {{ border-radius: 18px; }}
+        .card {{
+          grid-template-columns: 1fr;
+        }}
+        .card-media {{
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }}
+        .card-media-link,
+        .card-thumbnail-fallback {{
+          min-height: 170px;
+        }}
       }}
     </style>
   </head>
@@ -799,22 +858,55 @@ def _build_lodging_cards(
             "\n".join(
                 [
                     '<article class="card">',
-                    '  <div class="card-header">',
-                    f'    <h2 class="card-title">{escape(lodging.display_name)}</h2>',
-                    "  </div>",
-                    f'  <div class="chip-row">{"".join(chips)}</div>',
+                    _build_lodging_thumbnail(lodging),
+                    '  <div class="card-content">',
+                    '    <div class="card-header">',
+                    f'      <h2 class="card-title">{escape(lodging.display_name)}</h2>',
+                    "    </div>",
+                    f'    <div class="chip-row">{"".join(chips)}</div>',
                     (
-                        f'  <p class="meta">{"<br />".join(meta_lines)}</p>'
+                        f'    <p class="meta">{"<br />".join(meta_lines)}</p>'
                         if meta_lines
                         else ""
                     ),
-                    f'  <div class="links">{"".join(link for link in links if link)}</div>',
-                    f'  <div class="decision-actions">{decision_actions}</div>',
+                    f'    <div class="links">{"".join(link for link in links if link)}</div>',
+                    f'    <div class="decision-actions">{decision_actions}</div>',
+                    "  </div>",
                     "</article>",
                 ]
             )
         )
     return cards
+
+
+def _build_lodging_thumbnail(lodging: TripDisplayLodging) -> str:
+    thumbnail_url = _select_lodging_thumbnail_url(lodging)
+    if thumbnail_url:
+        image = (
+            f'<img class="card-thumbnail" src="{escape(thumbnail_url, quote=True)}"'
+            f' alt="{escape(lodging.display_name, quote=True)} 縮圖" loading="lazy" />'
+        )
+        if lodging.target_url:
+            return (
+                '  <div class="card-media">'
+                f'<a class="card-media-link" href="{escape(lodging.target_url, quote=True)}"'
+                ' target="_blank" rel="noreferrer">'
+                f"{image}</a></div>"
+            )
+        return f'  <div class="card-media">{image}</div>'
+
+    return (
+        '  <div class="card-media">'
+        '    <div class="card-thumbnail-fallback">'
+        f'      <span class="card-fallback-platform">{escape(platform_label(lodging.platform))}</span>'
+        '      <span class="card-fallback-text">沒有縮圖</span>'
+        "    </div>"
+        "  </div>"
+    )
+
+
+def _select_lodging_thumbnail_url(lodging: TripDisplayLodging) -> str | None:
+    return lodging.hero_image_url or lodging.line_hero_image_url
 
 
 def _build_decision_chip(lodging: TripDisplayLodging) -> str:

@@ -28,6 +28,7 @@
 - `GET /trips/{display_token}`
   - 使用穩定的 read-only token，不暴露 raw LINE scope ids。
   - 預設顯示 `候選中` 與 `已預訂` 住宿，隱藏 `不考慮` 住宿。
+  - 住宿卡片會優先使用 `hero_image_url` 顯示網頁縮圖；只有 `line_hero_image_url` 時會 fallback 使用該欄位，兩者都沒有時會保留固定尺寸的無圖區塊。
   - 支援 query 參數：
     - `platform`
     - `availability=all|available|sold_out|unknown`

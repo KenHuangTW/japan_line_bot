@@ -6,7 +6,13 @@ from typing import Any, Sequence
 from app.models import LineTrip
 from app.notion_sync.models import NotionSyncSourceScope
 from app.notion_sync.targets import NotionTargetConfig
-from app.trip_display import MongoTripDisplayRepository, TripDisplayFilters
+from app.trip_display import (
+    MongoTripDisplayRepository,
+    TripDisplayFilters,
+    TripDisplayLodging,
+    TripDisplaySurface,
+    build_trip_detail_html,
+)
 
 
 class FakeCursor:
@@ -262,3 +268,104 @@ def test_mongo_trip_display_repository_filters_decision_status() -> None:
 
     assert dismissed.visible_count == 1
     assert dismissed.lodgings[0].display_name == "Dismissed Home"
+
+
+def test_trip_detail_html_renders_thumbnail_and_fallback_cards() -> None:
+    surface = _build_surface(
+        (
+            TripDisplayLodging(
+                document_id="doc-1",
+                platform="booking",
+                url="https://www.booking.com/hotel/jp/foo.html",
+                property_name="Foo Hotel",
+                hero_image_url="https://cdn.example.com/foo-hero.webp",
+                line_hero_image_url="https://cdn.example.com/foo-line.jpg",
+                price_amount=3200,
+                price_currency="TWD",
+                is_sold_out=False,
+            ),
+            TripDisplayLodging(
+                document_id="doc-2",
+                platform="agoda",
+                url="https://www.agoda.com/bar.html",
+                property_name="Bar Hotel",
+                line_hero_image_url="https://cdn.example.com/bar-line.jpg",
+                is_sold_out=True,
+            ),
+            TripDisplayLodging(
+                document_id="doc-3",
+                platform="airbnb",
+                url="https://www.airbnb.com/rooms/1",
+                property_name="Air Home",
+            ),
+        )
+    )
+
+    html = build_trip_detail_html(surface, request_path="/trips/trip-display-token")
+
+    assert 'class="card-media"' in html
+    assert 'class="card-thumbnail"' in html
+    assert 'src="https://cdn.example.com/foo-hero.webp"' in html
+    assert 'src="https://cdn.example.com/foo-line.jpg"' not in html
+    assert 'src="https://cdn.example.com/bar-line.jpg"' in html
+    assert 'href="https://www.booking.com/hotel/jp/foo.html"' in html
+    assert 'class="card-thumbnail-fallback"' in html
+    assert "沒有縮圖" in html
+    assert "Airbnb" in html
+    assert "Foo Hotel" in html
+    assert "Booking.com" in html
+    assert "已訂這間" in html
+
+
+def test_trip_detail_html_escapes_thumbnail_url_and_alt_text() -> None:
+    surface = _build_surface(
+        (
+            TripDisplayLodging(
+                document_id="doc-1",
+                platform="booking",
+                url='https://www.booking.com/hotel/jp/foo.html?ref="x"&q=<tag>',
+                property_name='Foo "Hotel" <script>',
+                hero_image_url='https://cdn.example.com/foo.jpg?size="lg"&q=<tag>',
+            ),
+        )
+    )
+
+    html = build_trip_detail_html(surface, request_path="/trips/trip-display-token")
+
+    assert (
+        'src="https://cdn.example.com/foo.jpg?size=&quot;lg&quot;&amp;q=&lt;tag&gt;"'
+        in html
+    )
+    assert 'alt="Foo &quot;Hotel&quot; &lt;script&gt; 縮圖"' in html
+    assert (
+        'href="https://www.booking.com/hotel/jp/foo.html?ref=&quot;x&quot;&amp;q=&lt;tag&gt;"'
+        in html
+    )
+    assert 'Foo "Hotel" <script>' not in html
+
+
+def _build_surface(
+    lodgings: tuple[TripDisplayLodging, ...],
+) -> TripDisplaySurface:
+    return TripDisplaySurface(
+        trip_id="trip-1",
+        trip_title="東京 2026",
+        trip_status="active",
+        display_token="trip-display-token",
+        filters=TripDisplayFilters(),
+        lodgings=lodgings,
+        total_lodgings=len(lodgings),
+        available_count=sum(1 for lodging in lodgings if lodging.is_sold_out is False),
+        sold_out_count=sum(1 for lodging in lodgings if lodging.is_sold_out is True),
+        unknown_count=sum(1 for lodging in lodgings if lodging.is_sold_out is None),
+        candidate_count=sum(
+            1 for lodging in lodgings if lodging.decision_status == "candidate"
+        ),
+        booked_count=sum(
+            1 for lodging in lodgings if lodging.decision_status == "booked"
+        ),
+        dismissed_count=sum(
+            1 for lodging in lodgings if lodging.decision_status == "dismissed"
+        ),
+        platform_options=tuple(sorted({lodging.platform for lodging in lodgings})),
+    )
