@@ -43,6 +43,7 @@ _SUBSTRING_TEXT_MAP = {
 def localize_parsed_lodging_map(parsed: ParsedLodgingMap) -> ParsedLodgingMap:
     return ParsedLodgingMap(
         property_name=parsed.property_name,
+        hero_image_url=parsed.hero_image_url,
         formatted_address=_localize_address(parsed.formatted_address),
         street_address=_localize_address(parsed.street_address),
         district=_localize_text(parsed.district),

@@ -303,9 +303,17 @@ def test_lodging_map_enrichment_service_prefers_agoda_secondary_data_coordinates
         {"regionName": "Japan Hotels"},
         {"regionName": "Nagoya Hotels"}
       ],
+      "mosaicInitData": {
+        "images": [
+          {
+            "location": "//q-xx.bstatic.com/xdata/images/hotel/max1024x768/462624795.jpg?k=hero&o="
+          }
+        ]
+      },
       "inquiryProperty": {
         "placeName": "FunHome黑川-包棟一軒家 車站步行4分鐘",
         "hotelNameEnglish": "FunHome Kurokawa",
+        "hotelImage": "//q-xx.bstatic.com/xdata/images/hotel/max1024x768/fallback.jpg?k=fallback&o=",
         "hotelLocation": "Nagoya Castle Nagoya, Japan",
         "propertyType": "apartment",
         "numberOfBedrooms": 2,
@@ -350,6 +358,11 @@ def test_lodging_map_enrichment_service_prefers_agoda_secondary_data_coordinates
 
     assert enriched is not None
     assert enriched.property_name == "FunHome黑川-包棟一軒家 車站步行4分鐘"
+    assert (
+        enriched.hero_image_url
+        == "https://q-xx.bstatic.com/xdata/images/hotel/max1024x768/462624795.jpg?k=hero&o="
+    )
+    assert enriched.line_hero_image_url == enriched.hero_image_url
     assert enriched.formatted_address == "名古屋城 名古屋, 日本"
     assert enriched.latitude == 35.199214935302734
     assert enriched.longitude == 136.9108123779297

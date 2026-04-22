@@ -16,6 +16,13 @@ SOLD_OUT_TEXT_PATTERN = re.compile(
     r"sold\s*out|已售完|已無空房|無空房|查無空房",
     re.IGNORECASE,
 )
+PLACEHOLDER_IMAGE_MARKERS = (
+    "/images/default/",
+    "image-place-holder",
+    "preload.gif",
+    "img-building",
+    "logo",
+)
 
 
 def extract_agoda_secondary_data_url(
@@ -82,6 +89,7 @@ def parse_agoda_secondary_data(payload: str) -> ParsedLodgingMap | None:
             or inquiry_property.get("bathroomCount")
         )
 
+    hero_image_url = _extract_hero_image_url(document, inquiry_property)
     city, country_name = _extract_breadcrumb_location(document.get("breadcrumbs"))
 
     if isinstance(map_params, dict):
@@ -131,6 +139,7 @@ def parse_agoda_secondary_data(payload: str) -> ParsedLodgingMap | None:
     )
     return ParsedLodgingMap(
         property_name=property_name,
+        hero_image_url=hero_image_url,
         formatted_address=formatted_address,
         city=city,
         country_name=country_name,
@@ -165,6 +174,100 @@ def parse_agoda_secondary_data(payload: str) -> ParsedLodgingMap | None:
         is_sold_out=is_sold_out,
         availability_source=availability_source,
     )
+
+
+def _extract_hero_image_url(
+    document: dict[str, Any],
+    inquiry_property: dict[str, Any] | Any,
+) -> str | None:
+    protocol = _normalize_string(document.get("protocol")) or "https:"
+    candidates: list[Any] = []
+
+    mosaic_init_data = document.get("mosaicInitData")
+    if isinstance(mosaic_init_data, dict):
+        candidates.extend(_extract_mosaic_image_candidates(mosaic_init_data))
+
+    if isinstance(inquiry_property, dict):
+        candidates.extend(
+            [
+                inquiry_property.get("hotelImage"),
+                inquiry_property.get("imageUrl"),
+                inquiry_property.get("imageURL"),
+                inquiry_property.get("mainImageUrl"),
+                inquiry_property.get("mainImageURL"),
+            ]
+        )
+
+    candidates.append(
+        _read_nested_string(document, "mapParams", "review", "hotelImageUrl")
+    )
+    candidates.extend(_extract_room_image_candidates(document.get("datelessMasterRoomInfo")))
+
+    for candidate in candidates:
+        normalized = _normalize_image_url(candidate, protocol=protocol)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _extract_mosaic_image_candidates(mosaic_init_data: dict[str, Any]) -> list[Any]:
+    candidates: list[Any] = []
+    for collection_key in ("mosaicImages", "images"):
+        images = mosaic_init_data.get(collection_key)
+        if not isinstance(images, list):
+            continue
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            candidates.extend(
+                [
+                    image.get("location"),
+                    image.get("locationMediumRectangle"),
+                    image.get("locationLarge"),
+                    image.get("locationXL"),
+                    image.get("locationXxl"),
+                    image.get("url"),
+                    image.get("imageUrl"),
+                ]
+            )
+    return candidates
+
+
+def _extract_room_image_candidates(value: Any) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+
+    candidates: list[Any] = []
+    for room in value:
+        if not isinstance(room, dict):
+            continue
+        images = room.get("images")
+        if isinstance(images, list):
+            candidates.extend(images)
+    return candidates
+
+
+def _normalize_image_url(value: Any, *, protocol: str) -> str | None:
+    normalized = _normalize_string(value)
+    if normalized is None:
+        return None
+
+    if _is_placeholder_image_url(normalized):
+        return None
+
+    if normalized.startswith("//"):
+        scheme = "https:" if protocol not in {"http:", "https:"} else protocol
+        return f"{scheme}{normalized}"
+    if normalized.startswith(("http://", "https://")):
+        return normalized
+    if normalized.startswith("/"):
+        return urljoin("https://www.agoda.com", normalized)
+    return None
+
+
+def _is_placeholder_image_url(value: str) -> bool:
+    normalized = value.lower()
+    return any(marker in normalized for marker in PLACEHOLDER_IMAGE_MARKERS)
 
 
 def _normalize_string(value: Any) -> str | None:
