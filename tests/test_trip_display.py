@@ -270,7 +270,7 @@ def test_mongo_trip_display_repository_filters_decision_status() -> None:
     assert dismissed.lodgings[0].display_name == "Dismissed Home"
 
 
-def test_trip_detail_html_renders_thumbnail_and_fallback_cards() -> None:
+def test_trip_detail_html_renders_trip_log_rows_with_thumbnails_and_controls() -> None:
     surface = _build_surface(
         (
             TripDisplayLodging(
@@ -278,6 +278,9 @@ def test_trip_detail_html_renders_thumbnail_and_fallback_cards() -> None:
                 platform="booking",
                 url="https://www.booking.com/hotel/jp/foo.html",
                 property_name="Foo Hotel",
+                formatted_address="東京新宿區",
+                google_maps_url="https://maps.example.com/foo",
+                notion_page_url="https://notion.so/foo",
                 hero_image_url="https://cdn.example.com/foo-hero.webp",
                 line_hero_image_url="https://cdn.example.com/foo-line.jpg",
                 price_amount=3200,
@@ -303,7 +306,34 @@ def test_trip_detail_html_renders_thumbnail_and_fallback_cards() -> None:
 
     html = build_trip_detail_html(surface, request_path="/trips/trip-display-token")
 
-    assert 'class="card-media"' in html
+    assert 'class="trip-app"' in html
+    assert 'class="trip-sidebar"' in html
+    assert "Trip Log" in html
+    assert "平台篩選" in html
+    assert "快速篩選" in html
+    assert "LINE Japan Bot" in html
+    assert "width: 240px;" in html
+    assert "@media (max-width: 980px)" in html
+    assert "@media (max-width: 640px)" in html
+    assert 'class="stats-grid"' in html
+    assert 'class="stat-cell"' in html
+    assert "已訂" in html
+    assert "候選" in html
+    assert "不考慮" in html
+    assert "待確認" in html
+    assert 'class="trip-toolbar"' in html
+    assert 'class="toolbar-control"' in html
+    assert 'class="trip-controls"' in html
+    assert 'select name="availability"' in html
+    assert 'select name="decision_status"' in html
+    assert 'select name="sort"' in html
+    assert "套用" in html
+    assert "重設" in html
+    assert 'class="lodging-row"' in html
+    assert 'class="lodging-row-shell"' in html
+    assert 'class="lodging-index"' in html
+    assert 'class="lodging-thumbnail-frame"' in html
+    assert 'class="lodging-tags"' in html
     assert 'class="card-thumbnail"' in html
     assert 'src="https://cdn.example.com/foo-hero.webp"' in html
     assert 'src="https://cdn.example.com/foo-line.jpg"' not in html
@@ -314,7 +344,13 @@ def test_trip_detail_html_renders_thumbnail_and_fallback_cards() -> None:
     assert "Airbnb" in html
     assert "Foo Hotel" in html
     assert "Booking.com" in html
+    assert "東京新宿區" in html
+    assert "https://maps.example.com/foo" in html
+    assert "https://notion.so/foo" in html
     assert "已訂這間" in html
+    assert "不考慮這間" in html
+    assert "?decision_status=booked" in html
+    assert "?availability=unknown" in html
 
 
 def test_trip_detail_html_escapes_thumbnail_url_and_alt_text() -> None:

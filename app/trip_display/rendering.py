@@ -39,6 +39,8 @@ DECISION_STATUS_LABELS = {
     "dismissed": "不考慮",
 }
 
+_UNSET = object()
+
 
 def build_line_trip_preview(
     surface: TripDisplaySurface,
@@ -130,17 +132,31 @@ def build_trip_detail_html(
     *,
     request_path: str,
 ) -> str:
-    cards = (
-        "\n".join(_build_lodging_cards(surface.lodgings, request_path=request_path))
+    lodging_rows = (
+        "\n".join(_build_lodging_rows(surface.lodgings, request_path=request_path))
         or _build_empty_state()
     )
-    notion_link = (
+    notion_action = (
         (
-            '<a class="secondary-link"'
+            '<a class="document-link"'
             f' href="{escape(surface.notion_export_url, quote=True)}"'
             ' target="_blank" rel="noreferrer">開啟 Notion 匯出</a>'
         )
         if surface.notion_export_url
+        else ""
+    )
+    header_actions = (
+        f'<div class="document-actions">{notion_action}</div>' if notion_action else ""
+    )
+    platform_links = _build_platform_filter_links(surface, request_path=request_path)
+    quick_filter_links = _build_quick_filter_links(
+        surface.filters,
+        request_path=request_path,
+    )
+    hidden_platform_input = (
+        '<input type="hidden" name="platform"'
+        f' value="{escape(surface.filters.platform, quote=True)}" />'
+        if surface.filters.platform
         else ""
     )
     return f"""<!DOCTYPE html>
@@ -152,163 +168,262 @@ def build_trip_detail_html(
     <style>
       :root {{
         color-scheme: light;
-        --bg: #f7f1e7;
-        --bg-accent: #efe3d2;
-        --card: rgba(255, 251, 246, 0.92);
-        --ink: #1f2a32;
-        --muted: #5f6b73;
-        --line: rgba(31, 42, 50, 0.12);
-        --accent: #156b6c;
-        --accent-soft: rgba(21, 107, 108, 0.12);
-        --warn: #9f5b00;
-        --danger: #8c2f39;
+        --page: #f2f0ec;
+        --paper: #fafaf8;
+        --paper-soft: #f5f4f0;
+        --ink: #1a1a1a;
+        --muted: #76736b;
+        --faint: #aaa59a;
+        --line: #e2dfd7;
+        --line-strong: #d4d0c7;
+        --warning-bg: #f8ecd1;
+        --warning-ink: #8a4b0f;
+        --danger-bg: #f1dedc;
+        --danger-ink: #8c2f39;
       }}
       * {{ box-sizing: border-box; }}
+      html, body {{
+        height: 100%;
+      }}
       body {{
         margin: 0;
-        font-family: "Avenir Next", "Hiragino Sans CNS", "PingFang TC", sans-serif;
-        background:
-          radial-gradient(circle at top left, rgba(255,255,255,0.6), transparent 38%),
-          linear-gradient(180deg, var(--bg) 0%, #f3eadf 100%);
+        min-height: 100vh;
+        background: #ece9e3;
+        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "PingFang TC", "Noto Sans TC", sans-serif;
         color: var(--ink);
       }}
-      main {{
-        max-width: 960px;
-        margin: 0 auto;
-        padding: 20px 16px 56px;
+      button, select, a {{
+        font: inherit;
       }}
-      .hero {{
-        padding: 22px;
-        border: 1px solid var(--line);
-        border-radius: 24px;
-        background: linear-gradient(135deg, rgba(255,255,255,0.88), rgba(239,227,210,0.95));
-        box-shadow: 0 18px 60px rgba(55, 41, 23, 0.08);
+      .trip-app {{
+        display: flex;
+        min-height: 100vh;
+        overflow: hidden;
       }}
-      .eyebrow {{
-        margin: 0 0 8px;
-        color: var(--accent);
-        font-size: 0.82rem;
-        letter-spacing: 0.08em;
+      .trip-sidebar {{
+        width: 240px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        background: #fafaf8;
+        border-right: 1px solid #e0ddd6;
+      }}
+      .sidebar-brand {{
+        padding: 32px 28px 24px;
+        border-bottom: 1px solid #e8e5de;
+      }}
+      .sidebar-eyebrow {{
+        margin: 0 0 10px;
+        color: var(--faint);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.58rem;
+        letter-spacing: 0.32em;
         text-transform: uppercase;
       }}
-      h1 {{
+      .sidebar-title {{
         margin: 0;
-        font-family: "Iowan Old Style", "Times New Roman", serif;
-        font-size: clamp(1.8rem, 5vw, 3rem);
-        line-height: 1.05;
+        font-family: "Iowan Old Style", "Hiragino Mincho ProN", "Yu Mincho", "Times New Roman", serif;
+        font-size: 1.4rem;
+        font-weight: 700;
+        line-height: 1.3;
       }}
-      .summary {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 18px;
+      .sidebar-stats {{
+        padding: 4px 28px 16px;
+        border-bottom: 1px solid #e8e5de;
       }}
-      .metric {{
-        padding: 10px 14px;
-        border-radius: 999px;
-        background: var(--card);
-        border: 1px solid var(--line);
-        color: var(--muted);
-        font-size: 0.92rem;
+      .stats-grid {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 16px;
+        border-top: 1px solid var(--line);
+        border-left: 1px solid var(--line);
       }}
-      .actions {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 18px;
+      .stat-cell {{
+        min-width: 0;
+        padding: 12px 0;
+        text-align: center;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
       }}
-      .secondary-link {{
-        display: inline-flex;
-        align-items: center;
-        padding: 10px 14px;
-        border-radius: 999px;
-        border: 1px solid var(--line);
-        background: rgba(255,255,255,0.72);
+      .stat-value {{
+        display: block;
         color: var(--ink);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 1.6rem;
+        font-weight: 600;
+        line-height: 1.1;
+      }}
+      .stat-label {{
+        display: block;
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 0.62rem;
+        line-height: 1.3;
+        letter-spacing: 0.08em;
+      }}
+      .sidebar-sections {{
+        flex: 1;
+        padding: 20px 28px;
+        overflow: auto;
+      }}
+      .sidebar-section + .sidebar-section {{
+        margin-top: 24px;
+      }}
+      .section-label {{
+        margin: 0 0 12px;
+        color: var(--faint);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.58rem;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+      }}
+      .sidebar-filter-list {{
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }}
+      .sidebar-filter-link {{
+        display: block;
+        padding: 8px 12px;
+        color: #666;
+        font-size: 0.82rem;
         text-decoration: none;
       }}
-      form {{
-        margin-top: 18px;
-        padding: 16px;
-        border-radius: 20px;
-        background: var(--card);
-        border: 1px solid var(--line);
+      .sidebar-filter-link.is-active {{
+        background: #1a1a1a;
+        color: white;
       }}
-      .controls {{
-        display: grid;
-        gap: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      .sidebar-footer {{
+        padding: 16px 28px;
+        border-top: 1px solid #e8e5de;
+        color: #ccc;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.62rem;
       }}
-      label {{
+      .trip-main {{
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        background: #f5f3ef;
+        overflow: hidden;
+      }}
+      .trip-toolbar {{
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 18px 36px;
+        background: var(--paper);
+        border-bottom: 1px solid #e8e5de;
+      }}
+      .toolbar-count {{
+        color: var(--faint);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.74rem;
+      }}
+      .trip-controls {{
+        margin-left: auto;
         display: grid;
-        gap: 6px;
-        font-size: 0.9rem;
-        color: var(--muted);
+        grid-auto-flow: column;
+        gap: 8px;
+        align-items: center;
+      }}
+      .toolbar-control {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #888;
+        font-size: 0.76rem;
       }}
       select {{
-        width: 100%;
-        padding: 11px 12px;
-        border-radius: 14px;
-        border: 1px solid var(--line);
-        background: #fffdfa;
-        color: var(--ink);
+        min-height: 34px;
+        padding: 4px 8px;
+        border: 1px solid #e0ddd6;
+        border-radius: 0;
+        background: #fff;
+        color: #555;
+        font-size: 0.76rem;
       }}
-      .form-actions {{
-        display: flex;
-        gap: 10px;
-        margin-top: 14px;
-      }}
-      button, .reset-link {{
+      .apply-button, .reset-link, .decision-button {{
         display: inline-flex;
         justify-content: center;
         align-items: center;
-        min-height: 42px;
-        padding: 0 16px;
-        border-radius: 999px;
-        border: none;
+        min-height: 32px;
+        padding: 0 14px;
+        border-radius: 0;
         text-decoration: none;
         cursor: pointer;
-        font-size: 0.95rem;
+        font-size: 0.8rem;
       }}
-      button {{
-        background: var(--accent);
+      .apply-button {{
+        border: 1px solid var(--ink);
+        background: var(--ink);
         color: white;
       }}
-      .reset-link {{
-        border: 1px solid var(--line);
-        color: var(--ink);
-        background: rgba(255,255,255,0.72);
-      }}
-      .grid {{
-        display: grid;
-        gap: 14px;
-        margin-top: 18px;
-      }}
-      .card {{
-        display: grid;
-        grid-template-columns: minmax(180px, 30%) 1fr;
-        overflow: hidden;
-        padding: 0;
-        border-radius: 22px;
-        border: 1px solid var(--line);
-        background: var(--card);
-        box-shadow: 0 18px 42px rgba(48, 32, 18, 0.05);
-      }}
-      .card-media {{
-        min-height: 188px;
-        border-right: 1px solid var(--line);
-        background: linear-gradient(135deg, rgba(233,244,241,0.95), rgba(255,253,250,0.82));
-      }}
-      .card-media-link,
-      .card-thumbnail-fallback {{
+      .document-actions {{
         display: flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .document-link {{
+        display: inline-flex;
+        align-items: center;
+        min-height: 32px;
+        padding: 0 10px;
+        border: 1px solid #e0ddd6;
+        background: white;
+        color: var(--muted);
+        font-size: 0.72rem;
+        text-decoration: none;
+      }}
+      .reset-link {{
+        border: 1px solid var(--line-strong);
+        color: var(--ink);
+        background: #fff;
+      }}
+      .lodging-list {{
+        padding: 24px 36px;
+        overflow: auto;
+      }}
+      .lodging-row {{
+        padding: 20px 0;
+        border-bottom: 1px solid var(--line);
+        background: #fafaf8;
+      }}
+      .lodging-row:nth-child(even) {{
+        background: #f7f5f1;
+      }}
+      .lodging-row.is-dismissed {{
+        opacity: 0.35;
+      }}
+      .lodging-row-shell {{
+        display: grid;
+        grid-template-columns: 24px 160px minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
+        padding: 0 4px;
+      }}
+      .lodging-index {{
+        width: 24px;
+        padding-top: 3px;
+        color: #ccc;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.68rem;
+      }}
+      .lodging-thumbnail-frame {{
+        width: 160px;
+        height: 110px;
+        overflow: hidden;
+        outline: 1px solid #ddd9d0;
+        background: #e8e6e0;
+      }}
+      .lodging-thumbnail-link {{
+        display: block;
         width: 100%;
         height: 100%;
-        min-height: 188px;
-        aspect-ratio: 4 / 3;
-      }}
-      .card-media-link {{
-        align-items: stretch;
         color: inherit;
         text-decoration: none;
       }}
@@ -319,166 +434,313 @@ def build_trip_detail_html(
         object-fit: cover;
       }}
       .card-thumbnail-fallback {{
+        display: flex;
+        width: 100%;
+        height: 100%;
         flex-direction: column;
         justify-content: center;
-        gap: 8px;
-        padding: 18px;
+        gap: 6px;
+        padding: 12px;
+        background: #e8e6e0;
         color: var(--muted);
+        text-align: center;
       }}
-      .card-fallback-platform {{
-        color: var(--accent);
-        font-size: 0.82rem;
-        font-weight: 700;
+      .fallback-platform {{
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.62rem;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
       }}
-      .card-fallback-text {{
-        font-size: 0.95rem;
+      .fallback-text {{
+        font-size: 0.68rem;
+      }}
+      .lodging-content {{
+        min-width: 0;
+      }}
+      .lodging-tags {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 10px;
+      }}
+      .lodging-tag {{
+        padding: 2px 8px;
+        font-size: 0.62rem;
         line-height: 1.4;
       }}
-      .card-content {{
-        min-width: 0;
-        padding: 18px;
+      .lodging-tag.platform {{
+        background: #f0ede6;
+        color: #888;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        letter-spacing: 0.05em;
       }}
-      .card-header {{
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: start;
+      .lodging-tag.booked {{
+        background: #1a1a1a;
+        color: white;
+        letter-spacing: 0.08em;
       }}
-      .card-title {{
+      .lodging-tag.pending {{
+        background: var(--warning-bg);
+        color: var(--warning-ink);
+      }}
+      .lodging-tag.dismissed {{
+        background: var(--danger-bg);
+        color: var(--danger-ink);
+      }}
+      .lodging-title {{
         margin: 0;
-        font-size: 1.1rem;
-        line-height: 1.3;
+        color: var(--ink);
+        font-size: 0.92rem;
+        font-weight: 500;
+        line-height: 1.65;
+        overflow-wrap: anywhere;
       }}
-      .chip-row {{
+      .lodging-facts, .lodging-meta, .lodging-links, .decision-actions {{
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 10px;
       }}
-      .chip {{
-        display: inline-flex;
-        align-items: center;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: var(--accent-soft);
-        color: var(--accent);
-        font-size: 0.84rem;
-      }}
-      .chip.warn {{ background: rgba(159, 91, 0, 0.12); color: var(--warn); }}
-      .chip.danger {{ background: rgba(140, 47, 57, 0.12); color: var(--danger); }}
-      .meta {{
-        margin: 12px 0 0;
+      .lodging-facts {{
+        margin-top: 8px;
         color: var(--muted);
-        line-height: 1.5;
+        font-size: 0.72rem;
       }}
-      .links {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 16px;
+      .fact.is-warning {{
+        color: var(--warning-ink);
       }}
-      .links a {{
-        color: var(--accent);
+      .fact.is-danger {{
+        color: var(--danger-ink);
+      }}
+      .lodging-meta {{
+        margin-top: 10px;
+        color: #bbb;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.68rem;
+      }}
+      .meta-item {{
+        min-width: 0;
+      }}
+      .meta-item + .meta-item::before {{
+        content: "·";
+        margin-right: 8px;
+        color: var(--line-strong);
+      }}
+      .lodging-links {{
+        margin-left: auto;
+        gap: 12px;
+        font-size: 0.72rem;
+      }}
+      .lodging-links a {{
+        color: #bbb;
         text-decoration: none;
+        border-bottom: 1px solid #ddd9d0;
       }}
-      .decision-actions {{
+      .lodging-actions {{
         display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
         flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 16px;
       }}
-      .decision-actions form {{
+      .decision-form {{
         margin: 0;
         padding: 0;
         border: 0;
         background: transparent;
       }}
-      .decision-actions button {{
-        min-height: 38px;
+      .decision-button {{
+        border: 1px solid var(--ink);
+        background: var(--ink);
+        color: white;
       }}
-      .decision-actions .secondary {{
-        border: 1px solid var(--line);
-        background: rgba(255,255,255,0.72);
-        color: var(--ink);
+      .decision-button.secondary {{
+        border: 1px solid var(--line-strong);
+        background: #fff;
+        color: #999;
       }}
       .empty {{
-        padding: 36px 18px;
-        text-align: center;
-        border-radius: 22px;
-        border: 1px dashed var(--line);
-        background: rgba(255,255,255,0.48);
+        padding: 36px 4px;
+        border-bottom: 1px solid var(--line);
         color: var(--muted);
+        font-size: 0.86rem;
+        line-height: 1.7;
+      }}
+      @media (max-width: 980px) {{
+        .trip-app {{
+          display: block;
+          overflow: visible;
+        }}
+        .trip-sidebar {{
+          width: auto;
+          border-right: 0;
+          border-bottom: 1px solid #e8e5de;
+        }}
+        .sidebar-sections {{
+          padding-bottom: 24px;
+        }}
+        .trip-main {{
+          overflow: visible;
+        }}
+        .trip-toolbar {{
+          padding: 16px 20px;
+          flex-wrap: wrap;
+        }}
+        .trip-controls {{
+          width: 100%;
+          margin-left: 0;
+          grid-auto-flow: row;
+          justify-content: start;
+        }}
+        .toolbar-control {{
+          width: 100%;
+          justify-content: space-between;
+        }}
+        .document-actions {{
+          width: 100%;
+        }}
+        .lodging-list {{
+          padding: 20px;
+          overflow: visible;
+        }}
+        .lodging-row-shell {{
+          grid-template-columns: 24px 124px minmax(0, 1fr);
+          gap: 16px;
+        }}
+        .lodging-thumbnail-frame {{
+          width: 124px;
+          height: 96px;
+        }}
       }}
       @media (max-width: 640px) {{
-        main {{ padding-inline: 12px; }}
-        .hero, form, .card {{ border-radius: 18px; }}
-        .card {{
-          grid-template-columns: 1fr;
+        .sidebar-brand {{
+          padding: 24px 20px 20px;
         }}
-        .card-media {{
-          border-right: 0;
-          border-bottom: 1px solid var(--line);
+        .sidebar-stats,
+        .sidebar-sections,
+        .sidebar-footer,
+        .trip-toolbar,
+        .lodging-list {{
+          padding-left: 18px;
+          padding-right: 18px;
         }}
-        .card-media-link,
-        .card-thumbnail-fallback {{
-          min-height: 170px;
+        .sidebar-title {{
+          font-size: 1.2rem;
+        }}
+        .stats-grid {{
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }}
+        .sidebar-filter-list {{
+          flex-direction: row;
+          flex-wrap: wrap;
+        }}
+        .sidebar-filter-link {{
+          border: 1px solid #e0ddd6;
+          background: white;
+        }}
+        .lodging-row-shell {{
+          grid-template-columns: 20px 96px minmax(0, 1fr);
+          gap: 12px;
+          padding: 0;
+        }}
+        .lodging-thumbnail-frame {{
+          width: 96px;
+          height: 78px;
+        }}
+        .lodging-title {{
+          font-size: 0.84rem;
+        }}
+        .lodging-actions {{
+          align-items: flex-start;
+        }}
+        .lodging-links {{
+          width: 100%;
+          margin-left: 0;
+        }}
+      }}
+      @media (max-width: 420px) {{
+        .trip-toolbar {{
+          padding-top: 14px;
+          padding-bottom: 14px;
+        }}
+        .lodging-row-shell {{
+          grid-template-columns: 18px 88px minmax(0, 1fr);
+          gap: 10px;
+        }}
+        .lodging-thumbnail-frame {{
+          width: 88px;
+          height: 72px;
+        }}
+        .decision-button, .apply-button, .reset-link {{
+          width: 100%;
         }}
       }}
     </style>
   </head>
   <body>
-    <main>
-      <section class="hero">
-        <p class="eyebrow">Trip Display Surface</p>
-        <h1>{escape(surface.trip_title)}</h1>
-        <div class="summary">
-          <span class="metric">顯示 {surface.visible_count} / {surface.total_lodgings} 筆</span>
-          <span class="metric">已訂 {surface.booked_count}</span>
-          <span class="metric">候選 {surface.candidate_count}</span>
-          <span class="metric">不考慮 {surface.dismissed_count}</span>
-          <span class="metric">可訂 {surface.available_count}</span>
-          <span class="metric">已售完 {surface.sold_out_count}</span>
-          <span class="metric">待確認 {surface.unknown_count}</span>
-        </div>
-        <div class="actions">
-          {notion_link}
-        </div>
-      </section>
-      <form method="get" action="{escape(request_path, quote=True)}">
-        <div class="controls">
-          <label>
-            平台
-            <select name="platform">
-              {_build_platform_options(surface)}
-            </select>
-          </label>
-          <label>
-            狀態
-            <select name="availability">
-              {_build_availability_options(surface.filters)}
-            </select>
-          </label>
-          <label>
-            決策
-            <select name="decision_status">
-              {_build_decision_status_options(surface.filters)}
-            </select>
-          </label>
-          <label>
-            排序
-            <select name="sort">
-              {_build_sort_options(surface.filters)}
-            </select>
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit">套用</button>
-          <a class="reset-link" href="{escape(request_path, quote=True)}">重設</a>
-        </div>
-      </form>
-      <section class="grid">
-        {cards}
+    <main class="trip-app">
+      <aside class="trip-sidebar">
+        <section class="sidebar-brand">
+          <p class="sidebar-eyebrow">Trip Log</p>
+          <h1 class="sidebar-title">{escape(surface.trip_title)}</h1>
+        </section>
+        <section class="sidebar-stats" aria-label="旅次統計">
+          <div class="stats-grid">
+            <div class="stat-cell"><span class="stat-value">{surface.booked_count}</span><span class="stat-label">已訂</span></div>
+            <div class="stat-cell"><span class="stat-value">{surface.candidate_count}</span><span class="stat-label">候選</span></div>
+            <div class="stat-cell"><span class="stat-value">{surface.dismissed_count}</span><span class="stat-label">不考慮</span></div>
+            <div class="stat-cell"><span class="stat-value">{surface.available_count}</span><span class="stat-label">可訂</span></div>
+            <div class="stat-cell"><span class="stat-value">{surface.sold_out_count}</span><span class="stat-label">已售完</span></div>
+            <div class="stat-cell"><span class="stat-value">{surface.unknown_count}</span><span class="stat-label">待確認</span></div>
+          </div>
+        </section>
+        <section class="sidebar-sections">
+          <div class="sidebar-section">
+            <p class="section-label">平台篩選</p>
+            <div class="sidebar-filter-list">
+              {platform_links}
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <p class="section-label">快速篩選</p>
+            <div class="sidebar-filter-list">
+              {quick_filter_links}
+            </div>
+          </div>
+        </section>
+        <footer class="sidebar-footer">LINE Japan Bot</footer>
+      </aside>
+      <section class="trip-main">
+        <header class="trip-toolbar">
+          <span class="toolbar-count">顯示 {surface.visible_count} / {surface.total_lodgings} 筆</span>
+          <form class="trip-controls" method="get" action="{escape(request_path, quote=True)}">
+            {hidden_platform_input}
+            <label class="toolbar-control">
+              <span>狀態</span>
+              <select name="availability">
+                {_build_availability_options(surface.filters)}
+              </select>
+            </label>
+            <label class="toolbar-control">
+              <span>決策</span>
+              <select name="decision_status">
+                {_build_decision_status_options(surface.filters)}
+              </select>
+            </label>
+            <label class="toolbar-control">
+              <span>排序</span>
+              <select name="sort">
+                {_build_sort_options(surface.filters)}
+              </select>
+            </label>
+            <button class="apply-button" type="submit">套用</button>
+            <a class="reset-link" href="{escape(request_path, quote=True)}">重設</a>
+          </form>
+          {header_actions}
+        </header>
+        <section class="lodging-list" aria-label="住宿清單">
+          {lodging_rows}
+        </section>
       </section>
     </main>
   </body>
@@ -823,26 +1085,156 @@ def _build_sort_options(filters: TripDisplayFilters) -> str:
     )
 
 
-def _build_lodging_cards(
+def _build_platform_filter_links(
+    surface: TripDisplaySurface,
+    *,
+    request_path: str,
+) -> str:
+    links = [
+        _build_sidebar_filter_link(
+            label="全部",
+            href=_build_trip_filter_href(
+                request_path,
+                surface.filters,
+                platform=None,
+            ),
+            is_active=surface.filters.platform is None,
+        )
+    ]
+    selected_platform = (surface.filters.platform or "").lower()
+    for platform in surface.platform_options:
+        links.append(
+            _build_sidebar_filter_link(
+                label=platform_label(platform),
+                href=_build_trip_filter_href(
+                    request_path,
+                    surface.filters,
+                    platform=platform,
+                ),
+                is_active=selected_platform == platform.lower(),
+            )
+        )
+    return "".join(links)
+
+
+def _build_quick_filter_links(
+    filters: TripDisplayFilters,
+    *,
+    request_path: str,
+) -> str:
+    return "".join(
+        [
+            _build_sidebar_filter_link(
+                label="全部",
+                href=_build_trip_filter_href(
+                    request_path,
+                    filters,
+                    availability="all",
+                    decision_status="active",
+                ),
+                is_active=(
+                    filters.availability == "all"
+                    and filters.decision_status == "active"
+                ),
+            ),
+            _build_sidebar_filter_link(
+                label="已訂",
+                href=_build_trip_filter_href(
+                    request_path,
+                    filters,
+                    availability="all",
+                    decision_status="booked",
+                ),
+                is_active=filters.decision_status == "booked",
+            ),
+            _build_sidebar_filter_link(
+                label="待確認",
+                href=_build_trip_filter_href(
+                    request_path,
+                    filters,
+                    availability="unknown",
+                    decision_status="active",
+                ),
+                is_active=(
+                    filters.availability == "unknown"
+                    and filters.decision_status == "active"
+                ),
+            ),
+            _build_sidebar_filter_link(
+                label="不考慮",
+                href=_build_trip_filter_href(
+                    request_path,
+                    filters,
+                    availability="all",
+                    decision_status="dismissed",
+                ),
+                is_active=filters.decision_status == "dismissed",
+            ),
+        ]
+    )
+
+
+def _build_sidebar_filter_link(*, label: str, href: str, is_active: bool) -> str:
+    class_name = "sidebar-filter-link"
+    if is_active:
+        class_name += " is-active"
+    return f'<a class="{class_name}" href="{escape(href, quote=True)}">{escape(label)}</a>'
+
+
+def _build_trip_filter_href(
+    request_path: str,
+    filters: TripDisplayFilters,
+    *,
+    platform: str | None | object = _UNSET,
+    availability: str | object = _UNSET,
+    decision_status: str | object = _UNSET,
+    sort: str | object = _UNSET,
+) -> str:
+    query: dict[str, str] = {}
+    effective_platform = filters.platform if platform is _UNSET else platform
+    effective_availability = (
+        filters.availability if availability is _UNSET else availability
+    )
+    effective_decision_status = (
+        filters.decision_status if decision_status is _UNSET else decision_status
+    )
+    effective_sort = filters.sort if sort is _UNSET else sort
+
+    if isinstance(effective_platform, str) and effective_platform.strip():
+        query["platform"] = effective_platform
+    if isinstance(effective_availability, str) and effective_availability != "all":
+        query["availability"] = effective_availability
+    if (
+        isinstance(effective_decision_status, str)
+        and effective_decision_status != "active"
+    ):
+        query["decision_status"] = effective_decision_status
+    if isinstance(effective_sort, str) and effective_sort != "captured_desc":
+        query["sort"] = effective_sort
+
+    if not query:
+        return request_path
+    return f"{request_path}?{urlencode(query)}"
+
+
+def _build_lodging_rows(
     lodgings: tuple[TripDisplayLodging, ...],
     *,
     request_path: str,
 ) -> list[str]:
-    cards: list[str] = []
-    for lodging in lodgings:
-        chips = [
-            f'<span class="chip">{escape(platform_label(lodging.platform))}</span>',
-            _build_decision_chip(lodging),
-            _build_availability_chip(lodging),
-            f'<span class="chip">{escape(lodging.price_label)}</span>',
+    rows: list[str] = []
+    total_digits = max(2, len(str(len(lodgings))))
+    for index, lodging in enumerate(lodgings, start=1):
+        facts = [
+            f'<span class="fact">{escape(lodging.price_label)}</span>',
+            _build_availability_fact(lodging),
         ]
-        meta_lines = []
-        if lodging.formatted_address:
-            meta_lines.append(escape(lodging.formatted_address))
+        meta_items = []
+        location_label = lodging.formatted_address or lodging.city
+        if location_label:
+            meta_items.append(escape(location_label))
         if lodging.captured_at is not None:
-            meta_lines.append(
-                f"收錄時間：{escape(lodging.captured_at.strftime('%Y-%m-%d %H:%M'))}"
-            )
+            meta_items.append(escape(lodging.captured_at.strftime("%Y-%m-%d %H:%M")))
         links = [
             _build_anchor("原始連結", lodging.target_url),
         ]
@@ -854,29 +1246,40 @@ def _build_lodging_cards(
             lodging,
             request_path=request_path,
         )
-        cards.append(
+        row_class = "lodging-row"
+        if lodging.decision_status == "dismissed":
+            row_class += " is-dismissed"
+        rows.append(
             "\n".join(
                 [
-                    '<article class="card">',
+                    f'<article class="{row_class}">',
+                    '  <div class="lodging-row-shell">',
+                    f'    <div class="lodging-index">{index:0{total_digits}d}</div>',
                     _build_lodging_thumbnail(lodging),
-                    '  <div class="card-content">',
-                    '    <div class="card-header">',
-                    f'      <h2 class="card-title">{escape(lodging.display_name)}</h2>',
-                    "    </div>",
-                    f'    <div class="chip-row">{"".join(chips)}</div>',
+                    '    <div class="lodging-content">',
+                    f'      <div class="lodging-tags">{_build_platform_tag(lodging)}{_build_status_tag(lodging)}</div>',
+                    f'      <h2 class="lodging-title">{escape(lodging.display_name)}</h2>',
+                    f'      <div class="lodging-facts">{"".join(facts)}</div>',
                     (
-                        f'    <p class="meta">{"<br />".join(meta_lines)}</p>'
-                        if meta_lines
+                        f'      <div class="lodging-meta">{_join_meta_items(meta_items)}</div>'
+                        if meta_items
                         else ""
                     ),
-                    f'    <div class="links">{"".join(link for link in links if link)}</div>',
-                    f'    <div class="decision-actions">{decision_actions}</div>',
+                    '      <div class="lodging-actions">',
+                    f'        <div class="decision-actions">{decision_actions}</div>',
+                    (
+                        f'        <div class="lodging-links">{"".join(link for link in links if link)}</div>'
+                        if any(links)
+                        else ""
+                    ),
+                    "      </div>",
+                    "    </div>",
                     "  </div>",
                     "</article>",
                 ]
             )
         )
-    return cards
+    return rows
 
 
 def _build_lodging_thumbnail(lodging: TripDisplayLodging) -> str:
@@ -888,18 +1291,18 @@ def _build_lodging_thumbnail(lodging: TripDisplayLodging) -> str:
         )
         if lodging.target_url:
             return (
-                '  <div class="card-media">'
-                f'<a class="card-media-link" href="{escape(lodging.target_url, quote=True)}"'
+                '    <div class="lodging-thumbnail-frame">'
+                f'<a class="lodging-thumbnail-link" href="{escape(lodging.target_url, quote=True)}"'
                 ' target="_blank" rel="noreferrer">'
                 f"{image}</a></div>"
             )
-        return f'  <div class="card-media">{image}</div>'
+        return f'    <div class="lodging-thumbnail-frame">{image}</div>'
 
     return (
-        '  <div class="card-media">'
+        '    <div class="lodging-thumbnail-frame">'
         '    <div class="card-thumbnail-fallback">'
-        f'      <span class="card-fallback-platform">{escape(platform_label(lodging.platform))}</span>'
-        '      <span class="card-fallback-text">沒有縮圖</span>'
+        f'      <span class="fallback-platform">{escape(platform_label(lodging.platform))}</span>'
+        '      <span class="fallback-text">沒有縮圖</span>'
         "    </div>"
         "  </div>"
     )
@@ -909,22 +1312,54 @@ def _select_lodging_thumbnail_url(lodging: TripDisplayLodging) -> str | None:
     return lodging.hero_image_url or lodging.line_hero_image_url
 
 
-def _build_decision_chip(lodging: TripDisplayLodging) -> str:
-    chip_class = "chip"
+def _build_decision_badge(lodging: TripDisplayLodging) -> str:
+    badge_class = "row-badge"
     if lodging.decision_status == "booked":
-        chip_class = "chip"
+        badge_class = "row-badge"
     elif lodging.decision_status == "dismissed":
-        chip_class = "chip warn"
-    return f'<span class="{chip_class}">{escape(lodging.decision_status_label)}</span>'
+        badge_class = "row-badge is-warning"
+    return f'<span class="{badge_class}">{escape(lodging.decision_status_label)}</span>'
 
 
-def _build_availability_chip(lodging: TripDisplayLodging) -> str:
-    chip_class = "chip"
-    if lodging.availability_key == "sold_out":
-        chip_class = "chip danger"
+def _build_platform_tag(lodging: TripDisplayLodging) -> str:
+    return (
+        '<span class="lodging-tag platform">'
+        f"{escape(platform_label(lodging.platform))}"
+        "</span>"
+    )
+
+
+def _build_status_tag(lodging: TripDisplayLodging) -> str:
+    tag_class = "lodging-tag"
+    if lodging.decision_status == "booked":
+        tag_class += " booked"
+        label = "已預訂"
+    elif lodging.decision_status == "dismissed":
+        tag_class += " dismissed"
+        label = "不考慮"
     elif lodging.availability_key == "unknown":
-        chip_class = "chip warn"
-    return f'<span class="{chip_class}">{escape(lodging.availability_label)}</span>'
+        tag_class += " pending"
+        label = "待確認"
+    elif lodging.availability_key == "sold_out":
+        tag_class += " dismissed"
+        label = lodging.availability_label
+    else:
+        tag_class += " pending"
+        label = lodging.availability_label
+    return f'<span class="{tag_class}">{escape(label)}</span>'
+
+
+def _build_availability_fact(lodging: TripDisplayLodging) -> str:
+    fact_class = "fact"
+    if lodging.availability_key == "sold_out":
+        fact_class = "fact is-danger"
+    elif lodging.availability_key == "unknown":
+        fact_class = "fact is-warning"
+    return f'<span class="{fact_class}">{escape(lodging.availability_label)}</span>'
+
+
+def _join_meta_items(meta_items: list[str]) -> str:
+    return "".join(f'<span class="meta-item">{item}</span>' for item in meta_items)
 
 
 def _build_decision_action_forms(
@@ -974,11 +1409,13 @@ def _build_decision_form(
     label: str,
     button_class: str | None = None,
 ) -> str:
-    class_attr = f' class="{escape(button_class, quote=True)}"' if button_class else ""
+    button_classes = "decision-button"
+    if button_class:
+        button_classes = f"{button_classes} {button_class}"
     return (
-        f'<form method="post" action="{action_path}">'
+        f'<form class="decision-form" method="post" action="{action_path}">'
         f'<input type="hidden" name="decision_status" value="{escape(decision_status, quote=True)}" />'
-        f'<button type="submit"{class_attr}>{escape(label)}</button>'
+        f'<button class="{escape(button_classes, quote=True)}" type="submit">{escape(label)}</button>'
         "</form>"
     )
 
