@@ -83,8 +83,6 @@ def build_line_trip_preview(
             f"旅次詳情：{detail_url}",
         ]
     )
-    if surface.notion_export_url:
-        lines.append(f"Notion 匯出：{surface.notion_export_url}")
     return "\n".join(lines)
 
 
@@ -136,18 +134,7 @@ def build_trip_detail_html(
         "\n".join(_build_lodging_rows(surface.lodgings, request_path=request_path))
         or _build_empty_state()
     )
-    notion_action = (
-        (
-            '<a class="document-link"'
-            f' href="{escape(surface.notion_export_url, quote=True)}"'
-            ' target="_blank" rel="noreferrer">開啟 Notion 匯出</a>'
-        )
-        if surface.notion_export_url
-        else ""
-    )
-    header_actions = (
-        f'<div class="document-actions">{notion_action}</div>' if notion_action else ""
-    )
+    header_actions = ""
     platform_links = _build_platform_filter_links(surface, request_path=request_path)
     quick_filter_links = _build_quick_filter_links(
         surface.filters,
@@ -1240,8 +1227,6 @@ def _build_lodging_rows(
         ]
         if lodging.maps_url:
             links.append(_build_anchor("地圖", lodging.maps_url))
-        if lodging.notion_page_url:
-            links.append(_build_anchor("Notion 頁面", lodging.notion_page_url))
         decision_actions = _build_decision_action_forms(
             lodging,
             request_path=request_path,

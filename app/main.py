@@ -20,22 +20,12 @@ from app.map_enrichment import (
     MapEnrichmentRepository,
     MongoMapEnrichmentRepository,
 )
-from app.notion_sync import (
-    HttpNotionClient,
-    MongoNotionTargetRepository,
-    MongoNotionSyncRepository,
-    NotionLodgingSyncService,
-    NotionTargetManager,
-    NotionTargetRepository,
-    NotionSyncRepository,
-)
 from app.trip_display import MongoTripDisplayRepository, TripDisplayRepository
 from app.controllers.repositories import MongoTripRepository, TripRepository
 from app.routers import (
     health_router,
     line_webhook_router,
     map_enrichment_router,
-    notion_sync_router,
     trip_display_router,
 )
 
@@ -47,9 +37,6 @@ def create_app(
     lodging_link_service: LodgingLinkService | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
-    notion_sync_repository: NotionSyncRepository | None = None,
-    notion_sync_service: NotionLodgingSyncService | None = None,
-    notion_target_repository: NotionTargetRepository | None = None,
     trip_repository: TripRepository | None = None,
     trip_display_repository: TripDisplayRepository | None = None,
     decision_summary_service: DecisionSummaryService | None = None,
@@ -84,25 +71,6 @@ def create_app(
         )
     else:
         active_map_enrichment_repository = None
-    if notion_sync_repository is not None:
-        active_notion_sync_repository = notion_sync_repository
-    elif hasattr(active_collector, "collection"):
-        active_notion_sync_repository = MongoNotionSyncRepository(
-            active_collector.collection
-        )
-    else:
-        active_notion_sync_repository = None
-    if notion_target_repository is not None:
-        active_notion_target_repository = notion_target_repository
-    elif hasattr(active_collector, "collection") and hasattr(
-        active_collector.collection,
-        "database",
-    ):
-        active_notion_target_repository = MongoNotionTargetRepository(
-            active_collector.collection.database[active_settings.notion_target_collection]
-        )
-    else:
-        active_notion_target_repository = None
     if trip_repository is not None:
         active_trip_repository = trip_repository
     elif hasattr(active_collector, "collection") and hasattr(
@@ -119,7 +87,6 @@ def create_app(
     elif hasattr(active_collector, "collection"):
         active_trip_display_repository = MongoTripDisplayRepository(
             active_collector.collection,
-            active_notion_target_repository,
         )
     else:
         active_trip_display_repository = None
@@ -139,27 +106,6 @@ def create_app(
         )
     else:
         active_decision_summary_service = None
-    active_notion_sync_service = notion_sync_service or (
-        NotionLodgingSyncService(
-            HttpNotionClient(
-                active_settings.notion_api_token,
-                timeout=active_settings.notion_request_timeout,
-                api_version=active_settings.notion_api_version,
-            ),
-            parent_page_id=active_settings.notion_parent_page_id,
-            database_id=active_settings.notion_database_id,
-            data_source_id=active_settings.notion_data_source_id,
-            database_title=active_settings.notion_database_title,
-            database_url=active_settings.notion_database_url,
-            public_database_url=active_settings.notion_public_database_url,
-        )
-        if active_settings.notion_api_token
-        else None
-    )
-    active_notion_target_manager = NotionTargetManager(
-        active_notion_sync_service,
-        active_notion_target_repository,
-    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -181,10 +127,6 @@ def create_app(
     app.state.lodging_link_service = active_lodging_link_service
     app.state.map_enrichment_repository = active_map_enrichment_repository
     app.state.map_enrichment_service = active_map_enrichment_service
-    app.state.notion_sync_repository = active_notion_sync_repository
-    app.state.notion_sync_service = active_notion_sync_service
-    app.state.notion_target_repository = active_notion_target_repository
-    app.state.notion_target_manager = active_notion_target_manager
     app.state.trip_repository = active_trip_repository
     app.state.trip_display_repository = active_trip_display_repository
     app.state.decision_summary_service = active_decision_summary_service
@@ -192,7 +134,6 @@ def create_app(
     app.include_router(health_router)
     app.include_router(line_webhook_router)
     app.include_router(map_enrichment_router)
-    app.include_router(notion_sync_router)
     app.include_router(trip_display_router)
 
     return app

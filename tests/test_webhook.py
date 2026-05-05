@@ -21,13 +21,6 @@ from app.line_security import generate_signature
 from app.main import create_app as build_app
 from app.map_enrichment.models import EnrichedLodgingMap, MapEnrichmentCandidate
 from app.models import CapturedLodgingLink, LineTrip
-from app.notion_sync.models import (
-    NotionDatabaseTarget,
-    NotionPageResult,
-    NotionSyncCandidate,
-    NotionSyncSourceScope,
-)
-from app.notion_sync.targets import NotionTargetConfig
 from app.schemas.lodging_summary import (
     LodgingDecisionCandidate,
     LodgingDecisionSummaryLodging,
@@ -36,6 +29,7 @@ from app.schemas.lodging_summary import (
     LodgingDecisionSummaryStats,
     LodgingDecisionSummaryTrip,
 )
+from app.source_scope import SourceScope
 from app.trip_display import MongoTripDisplayRepository
 
 DEFAULT_TRIP_ID = "trip-current"
@@ -187,7 +181,6 @@ class InMemoryCapturedLinkRepository:
                     "decision_status": decision_status,
                     "decision_updated_at": datetime.now(timezone.utc),
                     "decision_updated_by_user_id": updated_by_user_id,
-                    "notion_sync_status": "pending",
                 }
             )
             self.items[index - 1] = updated
@@ -200,7 +193,7 @@ class InMemoryTripRepository:
         self.trips = [trip.model_copy() for trip in trips or []]
         self.next_trip_number = len(self.trips) + 1
 
-    def create_trip(self, source_scope: NotionSyncSourceScope, title: str) -> LineTrip:
+    def create_trip(self, source_scope: SourceScope, title: str) -> LineTrip:
         normalized_title = _normalize_trip_title(title)
         for trip in self.trips:
             if _matches_trip_source(trip, source_scope):
@@ -219,7 +212,7 @@ class InMemoryTripRepository:
 
     def find_open_trip_by_title(
         self,
-        source_scope: NotionSyncSourceScope,
+        source_scope: SourceScope,
         title: str,
     ) -> LineTrip | None:
         normalized_title = _normalize_trip_title(title)
@@ -232,7 +225,7 @@ class InMemoryTripRepository:
                 return trip.model_copy()
         return None
 
-    def get_active_trip(self, source_scope: NotionSyncSourceScope) -> LineTrip | None:
+    def get_active_trip(self, source_scope: SourceScope) -> LineTrip | None:
         for trip in self.trips:
             if (
                 _matches_trip_source(trip, source_scope)
@@ -251,7 +244,7 @@ class InMemoryTripRepository:
 
     def switch_active_trip(
         self,
-        source_scope: NotionSyncSourceScope,
+        source_scope: SourceScope,
         title: str,
     ) -> LineTrip | None:
         normalized_title = _normalize_trip_title(title)
@@ -274,7 +267,7 @@ class InMemoryTripRepository:
 
     def archive_active_trip(
         self,
-        source_scope: NotionSyncSourceScope,
+        source_scope: SourceScope,
     ) -> LineTrip | None:
         for trip in self.trips:
             if (
@@ -324,222 +317,6 @@ def create_app(
     )
 
 
-class InMemoryNotionSyncRepository:
-    def __init__(
-        self,
-        *,
-        pending_items: Sequence[NotionSyncCandidate] | None = None,
-        all_items: Sequence[NotionSyncCandidate] | None = None,
-    ) -> None:
-        self.pending_items = list(pending_items or [])
-        self.all_items = list(all_items or self.pending_items)
-        self.pending_limits: list[int | None] = []
-        self.all_limits: list[int | None] = []
-        self.pending_source_scopes: list[NotionSyncSourceScope | None] = []
-        self.all_source_scopes: list[NotionSyncSourceScope | None] = []
-        self.synced: list[str] = []
-        self.failed: list[tuple[str, str]] = []
-
-    def find_pending(
-        self,
-        limit: int | None,
-        source_scope: NotionSyncSourceScope | None = None,
-    ):
-        self.pending_limits.append(limit)
-        self.pending_source_scopes.append(source_scope)
-        return _filter_notion_candidates(
-            self.pending_items,
-            limit=limit,
-            source_scope=source_scope,
-        )
-
-    def find_all(
-        self,
-        limit: int | None = None,
-        source_scope: NotionSyncSourceScope | None = None,
-    ):
-        self.all_limits.append(limit)
-        self.all_source_scopes.append(source_scope)
-        return _filter_notion_candidates(
-            self.all_items,
-            limit=limit,
-            source_scope=source_scope,
-        )
-
-    def find_by_document_id(self, document_id: str):
-        for item in self.all_items:
-            if str(item.document_id) == document_id:
-                return item
-        return None
-
-    def list_documents(self, limit: int, statuses=None, source_scope=None):
-        raise NotImplementedError
-
-    def mark_synced(
-        self,
-        document_id,
-        *,
-        page_id: str,
-        page_url: str | None,
-        database_id: str | None,
-        data_source_id: str | None,
-    ) -> None:
-        self.synced.append(str(document_id))
-
-    def mark_failed(self, document_id, error: str) -> None:
-        self.failed.append((str(document_id), error))
-
-
-@dataclass
-class FakeNotionSyncState:
-    calls: list[str]
-    target_calls: list[tuple[str, str]]
-    setup_calls: list[str | None]
-    database_url_calls: list[tuple[str, bool]]
-
-
-class FakeNotionSyncService:
-    def __init__(
-        self,
-        *,
-        is_sync_configured: bool = True,
-        parent_page_id: str = "page-parent",
-        database_id: str | None = None,
-        data_source_id: str | None = None,
-        database_title: str = "Nihon LINE Bot Lodgings",
-        database_url: str | None = None,
-        public_database_url: str | None = None,
-        state: FakeNotionSyncState | None = None,
-    ) -> None:
-        resolved_database_id = database_id
-        if resolved_database_id is None:
-            resolved_database_id = "db-current" if is_sync_configured else ""
-        resolved_data_source_id = data_source_id
-        if resolved_data_source_id is None:
-            resolved_data_source_id = "ds-current" if is_sync_configured else ""
-        resolved_database_url = database_url
-        if resolved_database_url is None:
-            resolved_database_url = (
-                "https://www.notion.so/workspace/Trip-Lodgings-dbcurrent?v=view-current"
-                if is_sync_configured
-                else ""
-            )
-        resolved_public_database_url = public_database_url
-        if resolved_public_database_url is None:
-            resolved_public_database_url = (
-                "https://www.notion.so/public-trip-lodgings"
-                if is_sync_configured
-                else ""
-            )
-
-        self.parent_page_id = parent_page_id
-        self.database_id = resolved_database_id
-        self.data_source_id = resolved_data_source_id
-        self.database_title = database_title
-        self.database_url = resolved_database_url
-        self.public_database_url = resolved_public_database_url
-        self._state = state or FakeNotionSyncState([], [], [], [])
-
-    @property
-    def calls(self) -> list[str]:
-        return self._state.calls
-
-    @property
-    def target_calls(self) -> list[tuple[str, str]]:
-        return self._state.target_calls
-
-    @property
-    def setup_calls(self) -> list[str | None]:
-        return self._state.setup_calls
-
-    @property
-    def database_url_calls(self) -> list[tuple[str, bool]]:
-        return self._state.database_url_calls
-
-    @property
-    def is_setup_configured(self) -> bool:
-        return bool(self.parent_page_id or self.data_source_id)
-
-    @property
-    def is_sync_configured(self) -> bool:
-        return bool(self.data_source_id)
-
-    async def setup_database(self, title: str | None = None) -> NotionDatabaseTarget:
-        self._state.setup_calls.append(title)
-        if not self.data_source_id:
-            self.data_source_id = "ds-current"
-        if not self.database_id:
-            self.database_id = "db-current"
-        self.database_url = (
-            f"https://www.notion.so/workspace/{self.database_id}?v=view-{self.data_source_id}"
-        )
-        self.public_database_url = f"https://www.notion.so/public-{self.database_id}"
-        if title:
-            self.database_title = title
-        return NotionDatabaseTarget(
-            database_id=self.database_id,
-            data_source_id=self.data_source_id,
-            title=self.database_title,
-            url=self.database_url,
-            public_url=self.public_database_url,
-        )
-
-    async def get_database_url(self, *, prefer_public: bool = True) -> str | None:
-        self._state.database_url_calls.append((self.data_source_id, prefer_public))
-        if prefer_public:
-            return self.public_database_url or self.database_url or None
-        return self.database_url or self.public_database_url or None
-
-    def clone_with_target(
-        self,
-        *,
-        parent_page_id: str = "",
-        database_id: str = "",
-        data_source_id: str = "",
-        database_title: str = "Nihon LINE Bot Lodgings",
-        database_url: str = "",
-        public_database_url: str = "",
-    ) -> "FakeNotionSyncService":
-        return FakeNotionSyncService(
-            parent_page_id=parent_page_id,
-            database_id=database_id,
-            data_source_id=data_source_id,
-            database_title=database_title,
-            database_url=database_url,
-            public_database_url=public_database_url,
-            state=self._state,
-        )
-
-    async def sync_document(self, candidate: NotionSyncCandidate) -> NotionPageResult:
-        document_id = str(candidate.document_id)
-        self._state.calls.append(document_id)
-        self._state.target_calls.append((self.data_source_id, document_id))
-        return NotionPageResult(
-            page_id=f"page-{document_id}",
-            page_url=f"https://www.notion.so/page-{document_id}",
-            created=not (
-                candidate.notion_page_id
-                and candidate.notion_data_source_id == self.data_source_id
-            ),
-        )
-
-
-class InMemoryNotionTargetRepository:
-    def __init__(self) -> None:
-        self.targets: dict[tuple[str, str, str | None], NotionTargetConfig] = {}
-
-    def find_by_source_scope(
-        self,
-        source_scope: NotionSyncSourceScope,
-    ) -> NotionTargetConfig | None:
-        return self.targets.get(_scope_key(source_scope))
-
-    def save(self, target: NotionTargetConfig) -> None:
-        source_scope = target.source_scope
-        assert source_scope is not None
-        self.targets[_scope_key(source_scope)] = target
-
-
 class TripDisplayCursor:
     def __init__(self, documents: Sequence[dict[str, Any]]) -> None:
         self.documents = [dict(document) for document in documents]
@@ -570,8 +347,6 @@ class TripDisplayCollection:
 
 def _build_trip_display_repository(
     items: Sequence[CapturedLodgingLink],
-    *,
-    notion_target_repository: InMemoryNotionTargetRepository | None = None,
 ):
     documents = []
     for index, item in enumerate(items, start=1):
@@ -580,7 +355,6 @@ def _build_trip_display_repository(
         documents.append(document)
     return MongoTripDisplayRepository(
         TripDisplayCollection(documents),
-        notion_target_repository,
     )
 
 
@@ -602,15 +376,15 @@ class InMemoryMapEnrichmentRepository:
         self.all_items = list(all_items or self.pending_items)
         self.pending_limits: list[int | None] = []
         self.all_limits: list[int | None] = []
-        self.pending_source_scopes: list[NotionSyncSourceScope | None] = []
-        self.all_source_scopes: list[NotionSyncSourceScope | None] = []
+        self.pending_source_scopes: list[SourceScope | None] = []
+        self.all_source_scopes: list[SourceScope | None] = []
         self.resolved: list[str] = []
         self.failed: list[tuple[str, str]] = []
 
     def find_pending(
         self,
         limit: int | None,
-        source_scope: NotionSyncSourceScope | None = None,
+        source_scope: SourceScope | None = None,
     ):
         self.pending_limits.append(limit)
         self.pending_source_scopes.append(source_scope)
@@ -622,7 +396,7 @@ class InMemoryMapEnrichmentRepository:
     def find_all(
         self,
         limit: int | None = None,
-        source_scope: NotionSyncSourceScope | None = None,
+        source_scope: SourceScope | None = None,
     ):
         self.all_limits.append(limit)
         self.all_source_scopes.append(source_scope)
@@ -634,7 +408,7 @@ class InMemoryMapEnrichmentRepository:
     def find_failed(
         self,
         limit: int,
-        source_scope: NotionSyncSourceScope | None = None,
+        source_scope: SourceScope | None = None,
     ):
         raise NotImplementedError
 
@@ -753,15 +527,15 @@ class SharedMapEnrichmentRepository:
         self.store = store
         self.pending_limits: list[int | None] = []
         self.all_limits: list[int | None] = []
-        self.pending_source_scopes: list[NotionSyncSourceScope | None] = []
-        self.all_source_scopes: list[NotionSyncSourceScope | None] = []
+        self.pending_source_scopes: list[SourceScope | None] = []
+        self.all_source_scopes: list[SourceScope | None] = []
         self.resolved: list[str] = []
         self.failed: list[tuple[str, str]] = []
 
     def find_pending(
         self,
         limit: int | None,
-        source_scope: NotionSyncSourceScope | None = None,
+        source_scope: SourceScope | None = None,
     ):
         self.pending_limits.append(limit)
         self.pending_source_scopes.append(source_scope)
@@ -775,7 +549,7 @@ class SharedMapEnrichmentRepository:
     def find_all(
         self,
         limit: int | None = None,
-        source_scope: NotionSyncSourceScope | None = None,
+        source_scope: SourceScope | None = None,
     ):
         self.all_limits.append(limit)
         self.all_source_scopes.append(source_scope)
@@ -789,7 +563,7 @@ class SharedMapEnrichmentRepository:
     def find_failed(
         self,
         limit: int,
-        source_scope: NotionSyncSourceScope | None = None,
+        source_scope: SourceScope | None = None,
     ):
         raise NotImplementedError
 
@@ -886,94 +660,6 @@ class SharedMapEnrichmentRepository:
         self.failed.append((str(document_id), error))
 
 
-class SharedNotionSyncRepository:
-    def __init__(self, store: SharedCapturedDocumentStore) -> None:
-        self.store = store
-        self.pending_limits: list[int | None] = []
-        self.all_limits: list[int | None] = []
-        self.pending_source_scopes: list[NotionSyncSourceScope | None] = []
-        self.all_source_scopes: list[NotionSyncSourceScope | None] = []
-        self.synced: list[str] = []
-        self.failed: list[tuple[str, str]] = []
-
-    def find_pending(
-        self,
-        limit: int | None,
-        source_scope: NotionSyncSourceScope | None = None,
-    ):
-        self.pending_limits.append(limit)
-        self.pending_source_scopes.append(source_scope)
-        return _select_notion_candidates(
-            self.store.documents,
-            limit=limit,
-            source_scope=source_scope,
-            include_all=False,
-        )
-
-    def find_all(
-        self,
-        limit: int | None = None,
-        source_scope: NotionSyncSourceScope | None = None,
-    ):
-        self.all_limits.append(limit)
-        self.all_source_scopes.append(source_scope)
-        return _select_notion_candidates(
-            self.store.documents,
-            limit=limit,
-            source_scope=source_scope,
-            include_all=True,
-        )
-
-    def find_by_document_id(self, document_id: str):
-        document = _find_stored_document(self.store, document_id)
-        if document is None:
-            return None
-        return _build_shared_notion_candidate(document)
-
-    def list_documents(self, limit: int, statuses=None):
-        raise NotImplementedError
-
-    def mark_synced(
-        self,
-        document_id,
-        *,
-        page_id: str,
-        page_url: str | None,
-        database_id: str | None,
-        data_source_id: str | None,
-    ) -> None:
-        document = _find_stored_document(self.store, str(document_id))
-        assert document is not None
-        now = datetime.now(timezone.utc)
-        document.item = document.item.model_copy(
-            update={
-                "notion_page_id": page_id,
-                "notion_page_url": page_url,
-                "notion_database_id": database_id,
-                "notion_data_source_id": data_source_id,
-                "notion_sync_status": "synced",
-                "notion_sync_error": None,
-                "notion_sync_retry_count": 0,
-                "notion_last_attempt_at": now,
-                "notion_last_synced_at": now,
-            }
-        )
-        self.synced.append(str(document_id))
-
-    def mark_failed(self, document_id, error: str) -> None:
-        document = _find_stored_document(self.store, str(document_id))
-        assert document is not None
-        document.item = document.item.model_copy(
-            update={
-                "notion_sync_status": "failed",
-                "notion_sync_error": error,
-                "notion_sync_retry_count": document.item.notion_sync_retry_count + 1,
-                "notion_last_attempt_at": datetime.now(timezone.utc),
-            }
-        )
-        self.failed.append((str(document_id), error))
-
-
 def _build_payload(
     message_text: str,
     *,
@@ -1036,51 +722,11 @@ def _build_postback_payload(
     }
 
 
-def _build_notion_candidate(
-    document_id: str,
-    *,
-    notion_page_id: str | None = None,
-    notion_data_source_id: str | None = None,
-    source_type: str = "group",
-    group_id: str | None = "Cgroup123",
-    room_id: str | None = None,
-    user_id: str | None = "Uuser123",
-    trip_id: str | None = DEFAULT_TRIP_ID,
-    trip_title: str | None = DEFAULT_TRIP_TITLE,
-) -> NotionSyncCandidate:
-    return NotionSyncCandidate(
-        document_id=document_id,
-        platform="booking",
-        url=f"https://www.booking.com/hotel/jp/{document_id}.html",
-        captured_at=datetime(2026, 3, 30, tzinfo=timezone.utc),
-        source_type=source_type,
-        group_id=group_id,
-        room_id=room_id,
-        user_id=user_id,
-        trip_id=trip_id,
-        trip_title=trip_title,
-        notion_page_id=notion_page_id,
-        notion_data_source_id=notion_data_source_id,
-    )
-
-
-def _filter_notion_candidates(
-    items: Sequence[NotionSyncCandidate],
-    *,
-    limit: int | None,
-    source_scope: NotionSyncSourceScope | None,
-) -> list[NotionSyncCandidate]:
-    filtered = [item for item in items if _matches_source_scope(item, source_scope)]
-    if limit is None:
-        return filtered
-    return filtered[:limit]
-
-
 def _select_map_candidates(
     documents: Sequence[StoredCapturedDocument],
     *,
     limit: int | None,
-    source_scope: NotionSyncSourceScope | None,
+    source_scope: SourceScope | None,
     include_all: bool,
 ) -> list[MapEnrichmentCandidate]:
     candidates = [
@@ -1096,61 +742,6 @@ def _select_map_candidates(
     if limit is None:
         return candidates
     return candidates[:limit]
-
-
-def _select_notion_candidates(
-    documents: Sequence[StoredCapturedDocument],
-    *,
-    limit: int | None,
-    source_scope: NotionSyncSourceScope | None,
-    include_all: bool,
-) -> list[NotionSyncCandidate]:
-    candidates = [
-        _build_shared_notion_candidate(document)
-        for document in documents
-        if _matches_source_scope(document.item, source_scope)
-        and (include_all or _is_pending_notion_sync(document.item))
-    ]
-    if limit is None:
-        return candidates
-    return candidates[:limit]
-
-
-def _build_shared_notion_candidate(
-    document: StoredCapturedDocument,
-) -> NotionSyncCandidate:
-    item = document.item
-    return NotionSyncCandidate(
-        document_id=document.document_id,
-        platform=item.platform,
-        url=item.url,
-        resolved_url=item.resolved_url,
-        property_name=item.property_name,
-        formatted_address=item.formatted_address,
-        city=item.city,
-        country_code=item.country_code,
-        property_type=item.property_type,
-        amenities=tuple(item.amenities),
-        price_amount=item.price_amount,
-        price_currency=item.price_currency,
-        is_sold_out=item.is_sold_out,
-        google_maps_url=item.google_maps_url,
-        google_maps_search_url=item.google_maps_search_url,
-        map_status=item.map_status,
-        details_status=item.details_status,
-        pricing_status=item.pricing_status,
-        captured_at=item.captured_at,
-        last_updated_at=_resolve_item_last_updated_at(item),
-        source_type=item.source_type,
-        group_id=item.group_id,
-        room_id=item.room_id,
-        user_id=item.user_id,
-        trip_id=item.trip_id,
-        trip_title=item.trip_title,
-        notion_page_id=item.notion_page_id,
-        notion_database_id=item.notion_database_id,
-        notion_data_source_id=item.notion_data_source_id,
-    )
 
 
 def _find_stored_document(
@@ -1177,13 +768,6 @@ def _is_pending_map_enrichment(item: CapturedLodgingLink) -> bool:
     return item.map_status in {"pending", "failed"}
 
 
-def _is_pending_notion_sync(item: CapturedLodgingLink) -> bool:
-    return item.notion_page_id is None or item.notion_sync_status in {
-        "pending",
-        "failed",
-    }
-
-
 def _resolve_item_last_updated_at(
     item: CapturedLodgingLink,
 ) -> datetime | None:
@@ -1203,8 +787,8 @@ def _resolve_item_last_updated_at(
 
 
 def _matches_source_scope(
-    item: NotionSyncCandidate,
-    source_scope: NotionSyncSourceScope | None,
+    item: CapturedLodgingLink,
+    source_scope: SourceScope | None,
 ) -> bool:
     if source_scope is None:
         return True
@@ -1219,15 +803,6 @@ def _matches_source_scope(
     if source_scope.source_type == "user":
         return item.user_id == source_scope.user_id
     return False
-
-
-def _scope_key(source_scope: NotionSyncSourceScope) -> tuple[str, str, str | None]:
-    if source_scope.source_type == "group":
-        return ("group", str(source_scope.group_id), source_scope.trip_id)
-    if source_scope.source_type == "room":
-        return ("room", str(source_scope.room_id), source_scope.trip_id)
-    return ("user", str(source_scope.user_id), source_scope.trip_id)
-
 
 def _build_captured_link(
     url: str,
@@ -1321,47 +896,14 @@ def _build_trip_scope(
     user_id: str | None = None,
     trip_id: str = DEFAULT_TRIP_ID,
     trip_title: str = DEFAULT_TRIP_TITLE,
-) -> NotionSyncSourceScope:
-    return NotionSyncSourceScope(
+) -> SourceScope:
+    return SourceScope(
         source_type=source_type,
         group_id=group_id,
         room_id=room_id,
         user_id=user_id,
         trip_id=trip_id,
         trip_title=trip_title,
-    )
-
-
-def _build_trip_target(
-    *,
-    source_type: str = "group",
-    group_id: str | None = "Cgroup123",
-    room_id: str | None = None,
-    user_id: str | None = None,
-    trip_id: str = DEFAULT_TRIP_ID,
-    trip_title: str = DEFAULT_TRIP_TITLE,
-    parent_page_id: str = "page-trip-current",
-    database_id: str = "db-current",
-    data_source_id: str = "ds-current",
-    database_title: str = DEFAULT_TRIP_TITLE,
-    database_url: str = "https://www.notion.so/workspace/db-current?v=view-ds-current",
-    public_database_url: str = "https://www.notion.so/public-db-current",
-) -> NotionTargetConfig:
-    return NotionTargetConfig.from_source_scope(
-        _build_trip_scope(
-            source_type=source_type,
-            group_id=group_id,
-            room_id=room_id,
-            user_id=user_id,
-            trip_id=trip_id,
-            trip_title=trip_title,
-        ),
-        parent_page_id=parent_page_id,
-        database_id=database_id,
-        data_source_id=data_source_id,
-        database_title=database_title,
-        database_url=database_url,
-        public_database_url=public_database_url,
     )
 
 
@@ -1400,7 +942,6 @@ def _build_decision_summary_result(
                     amenities=["wifi", "kitchen"],
                     maps_url="https://maps.google.com/?q=35.1,139.1",
                     target_url="https://www.booking.com/hotel/jp/foo.html",
-                    notion_page_url="https://www.notion.so/foo",
                 ),
                 LodgingDecisionSummaryLodging(
                     document_id="doc-2",
@@ -1416,7 +957,6 @@ def _build_decision_summary_result(
                     amenities=["onsen"],
                     maps_url="https://maps.google.com/?q=bar",
                     target_url="https://www.agoda.com/bar.html",
-                    notion_page_url=None,
                 ),
             ],
         ),
@@ -1438,7 +978,7 @@ def _build_decision_summary_result(
 
 def _matches_trip_source(
     trip: LineTrip,
-    source_scope: NotionSyncSourceScope,
+    source_scope: SourceScope,
 ) -> bool:
     if trip.source_type != source_scope.source_type:
         return False
@@ -1540,78 +1080,9 @@ def test_line_webhook_captures_links_and_replies() -> None:
     assert all(item.google_maps_url is None for item in repository.items)
     assert all(item.group_id == "Cgroup123" for item in repository.items)
     assert fake_line_client.calls == [
-        ("reply-token", "已收到 2 筆住宿連結，會自動整理並同步到 Notion。")
+        ("reply-token", "已收到 2 筆住宿連結，會整理到目前旅次。")
     ]
 
-
-def test_line_webhook_auto_syncs_new_links_to_notion() -> None:
-    settings = Settings(
-        line_channel_secret="super-secret",
-        line_channel_access_token="line-token",
-    )
-    fake_line_client = FakeLineClient()
-    store = SharedCapturedDocumentStore()
-    repository = SharedCapturedLinkRepository(store)
-    map_enrichment_repository = SharedMapEnrichmentRepository(store)
-    notion_repository = SharedNotionSyncRepository(store)
-    notion_service = FakeNotionSyncService()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(_build_trip_target())
-    url = "https://www.booking.com/hotel/jp/foo.html"
-    map_enrichment_service = FakeMapEnrichmentService(
-        {
-            url: EnrichedLodgingMap(
-                property_name="Foo Hotel",
-                latitude=35.1,
-                longitude=139.1,
-                map_source="structured_data_geo",
-                google_maps_url="https://maps.google.com/?q=35.1,139.1",
-            )
-        }
-    )
-    client = TestClient(
-        create_app(
-            settings=settings,
-            collector=repository,
-            line_client=fake_line_client,
-            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
-            map_enrichment_repository=map_enrichment_repository,
-            map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
-        )
-    )
-
-    payload = _build_payload(url)
-    body = json.dumps(payload).encode("utf-8")
-    signature = generate_signature(settings.line_channel_secret, body)
-
-    response = client.post(
-        "/webhooks/line",
-        content=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Line-Signature": signature,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True, "captured": 1}
-    assert map_enrichment_repository.pending_limits == [None]
-    assert map_enrichment_repository.pending_source_scopes == [_build_trip_scope()]
-    assert map_enrichment_service.calls == [url]
-    assert notion_repository.pending_limits == [None]
-    assert notion_repository.pending_source_scopes == [_build_trip_scope()]
-    assert notion_repository.synced == ["doc-1"]
-    assert notion_service.calls == ["doc-1"]
-    assert repository.items[0].property_name == "Foo Hotel"
-    assert repository.items[0].map_status == "resolved"
-    assert repository.items[0].notion_sync_status == "synced"
-    assert repository.items[0].notion_page_id == "page-doc-1"
-    assert fake_line_client.calls == [
-        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
-    ]
 
 def test_line_webhook_does_not_auto_sync_duplicate_links() -> None:
     settings = Settings(
@@ -1626,8 +1097,6 @@ def test_line_webhook_does_not_auto_sync_duplicate_links() -> None:
     )
     repository = SharedCapturedLinkRepository(store)
     map_enrichment_repository = SharedMapEnrichmentRepository(store)
-    notion_repository = SharedNotionSyncRepository(store)
-    notion_service = FakeNotionSyncService()
     map_enrichment_service = FakeMapEnrichmentService(
         {"https://www.booking.com/hotel/jp/foo.html": None}
     )
@@ -1639,8 +1108,6 @@ def test_line_webhook_does_not_auto_sync_duplicate_links() -> None:
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
         )
     )
 
@@ -1661,15 +1128,13 @@ def test_line_webhook_does_not_auto_sync_duplicate_links() -> None:
     assert response.json() == {"ok": True, "captured": 0}
     assert len(repository.items) == 1
     assert map_enrichment_repository.pending_limits == []
-    assert notion_repository.pending_limits == []
     assert map_enrichment_service.calls == []
-    assert notion_service.calls == []
     assert fake_line_client.calls == [
         ("reply-token", "你是不是在找這個\nhttps://www.booking.com/hotel/jp/foo.html")
     ]
 
 
-def test_line_webhook_control_group_auto_syncs_new_links_to_target_group() -> None:
+def test_line_webhook_control_group_captures_new_links_to_target_group() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
@@ -1680,10 +1145,6 @@ def test_line_webhook_control_group_auto_syncs_new_links_to_target_group() -> No
     store = SharedCapturedDocumentStore()
     repository = SharedCapturedLinkRepository(store)
     map_enrichment_repository = SharedMapEnrichmentRepository(store)
-    notion_repository = SharedNotionSyncRepository(store)
-    notion_service = FakeNotionSyncService()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(_build_trip_target(group_id="Ctarget123"))
     url = "https://www.booking.com/hotel/jp/foo.html"
     map_enrichment_service = FakeMapEnrichmentService(
         {
@@ -1704,9 +1165,6 @@ def test_line_webhook_control_group_auto_syncs_new_links_to_target_group() -> No
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
             trip_group_id="Ctarget123",
         )
     )
@@ -1727,18 +1185,10 @@ def test_line_webhook_control_group_auto_syncs_new_links_to_target_group() -> No
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 1}
     assert repository.items[0].group_id == "Ctarget123"
-    assert repository.items[0].property_name == "Foo Hotel"
-    assert repository.items[0].notion_sync_status == "synced"
-    assert map_enrichment_repository.pending_source_scopes == [
-        _build_trip_scope(group_id="Ctarget123")
-    ]
-    assert notion_repository.pending_source_scopes == [
-        _build_trip_scope(group_id="Ctarget123")
-    ]
-    assert notion_repository.synced == ["doc-1"]
-    assert notion_service.calls == ["doc-1"]
+    assert repository.items[0].property_name is None
+    assert map_enrichment_repository.pending_source_scopes == []
     assert fake_line_client.calls == [
-        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+        ("reply-token", "已收到 1 筆住宿連結，會整理到目前旅次。")
     ]
 
 
@@ -1864,7 +1314,7 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "旅次模式操作：\n"
                 "1. /建立旅次 東京 2026\n"
                 "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
-                "3. /整理 同步目前旅次到 Notion\n"
+                "3. /整理 整理目前旅次資料\n"
                 "4. /清單 查看目前旅次清單\n"
                 "5. /摘要 產生 AI 決策摘要\n"
                 "\n"
@@ -1879,8 +1329,8 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "/封存旅次：封存目前旅次並清空 active trip\n"
                 "/清單：回傳目前旅次的住宿 preview 與詳情頁連結\n"
                 "/摘要：產生目前旅次的 AI 決策摘要\n"
-                "/整理：執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料\n"
-                "/全部重來：忽略既有同步狀態，只把目前旅次中的資料強制重新同步到 Notion"
+                "/整理：整理目前旅次中尚未補齊的住宿與地圖資料\n"
+                "/全部重來：忽略既有整理狀態，重新整理目前旅次中的所有住宿與地圖資料"
             ),
         )
     ]
@@ -2157,7 +1607,7 @@ def test_line_webhook_supports_trip_management_commands() -> None:
         assert response.json() == {"ok": True, "captured": 0}
 
     assert trip_repository.get_active_trip(
-        NotionSyncSourceScope(source_type="group", group_id="Cgroup123")
+        SourceScope(source_type="group", group_id="Cgroup123")
     ) is None
     assert fake_line_client.calls == [
         ("reply-token", "已建立並切換到旅次：東京 2026"),
@@ -2208,12 +1658,12 @@ def test_line_webhook_control_group_commands_manage_target_group_trip_state() ->
 
     assert (
         trip_repository.get_active_trip(
-            NotionSyncSourceScope(source_type="group", group_id="Ccontrol123")
+            SourceScope(source_type="group", group_id="Ccontrol123")
         )
         is None
     )
     target_trip = trip_repository.get_active_trip(
-        NotionSyncSourceScope(source_type="group", group_id="Ctarget123")
+        SourceScope(source_type="group", group_id="Ctarget123")
     )
     assert target_trip is not None
     assert target_trip.title == "東京 2026"
@@ -2318,7 +1768,7 @@ def test_line_webhook_control_group_capture_writes_into_target_group() -> None:
     assert captured.group_id == "Ctarget123"
     assert captured.trip_id == "trip-target"
     assert captured.trip_title == "Target Trip"
-    assert fake_line_client.calls == [("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")]
+    assert fake_line_client.calls == [("reply-token", "已收到 1 筆住宿連結，會整理到目前旅次。")]
 
 
 def test_line_webhook_control_group_capture_requires_target_group_active_trip() -> None:
@@ -2422,7 +1872,7 @@ def test_line_webhook_control_group_capture_falls_back_when_override_is_partial(
     assert repository.items[0].group_id == "Ccontrol123"
     assert repository.items[0].trip_id == "trip-control"
     assert fake_line_client.calls == [
-        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+        ("reply-token", "已收到 1 筆住宿連結，會整理到目前旅次。")
     ]
 
 
@@ -2476,7 +1926,7 @@ def test_line_webhook_control_group_capture_falls_back_for_unmatched_group() -> 
     assert repository.items[0].group_id == "Cother123"
     assert repository.items[0].trip_id == "trip-other"
     assert fake_line_client.calls == [
-        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+        ("reply-token", "已收到 1 筆住宿連結，會整理到目前旅次。")
     ]
 
 
@@ -2526,7 +1976,7 @@ def test_line_webhook_control_group_capture_falls_back_for_non_group_source() ->
     assert repository.items[0].room_id == "Rroom123"
     assert repository.items[0].trip_id == DEFAULT_TRIP_ID
     assert fake_line_client.calls == [
-        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+        ("reply-token", "已收到 1 筆住宿連結，會整理到目前旅次。")
     ]
 
 
@@ -2563,15 +2013,6 @@ def test_line_webhook_replies_trip_preview_for_list_command() -> None:
             }
         ),
     ]
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(
-        _build_trip_target(
-            public_database_url="https://www.notion.so/public-trip-lodgings",
-            database_url=(
-                "https://www.notion.so/workspace/Trip-Lodgings-dbcurrent?v=view-current"
-            ),
-        )
-    )
     client = TestClient(
         create_app(
             settings=settings,
@@ -2580,9 +2021,7 @@ def test_line_webhook_replies_trip_preview_for_list_command() -> None:
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             trip_display_repository=_build_trip_display_repository(
                 display_items,
-                notion_target_repository=notion_target_repository,
             ),
-            notion_target_repository=notion_target_repository,
         )
     )
 
@@ -2651,14 +2090,6 @@ def test_line_webhook_control_group_list_command_reads_target_group_trip() -> No
             }
         )
     ]
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(
-        _build_trip_target(
-            group_id="Ctarget123",
-            public_database_url="https://www.notion.so/public-target-trip",
-            database_url="https://www.notion.so/workspace/Trip-Lodgings-target?v=view-target",
-        )
-    )
     client = TestClient(
         create_app(
             settings=settings,
@@ -2667,9 +2098,7 @@ def test_line_webhook_control_group_list_command_reads_target_group_trip() -> No
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             trip_display_repository=_build_trip_display_repository(
                 display_items,
-                notion_target_repository=notion_target_repository,
             ),
-            notion_target_repository=notion_target_repository,
             trip_group_id="Ctarget123",
         )
     )
@@ -2699,7 +2128,7 @@ def test_line_webhook_control_group_list_command_reads_target_group_trip() -> No
     assert bubble["footer"]["contents"][1]["action"]["uri"] == "http://testserver/trips/trip-display-current"
 
 
-def test_line_webhook_list_command_works_without_notion_target() -> None:
+def test_line_webhook_list_command_works_with_trip_display_repository() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
@@ -3003,12 +2432,6 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
         line_channel_access_token="line-token",
     )
     repository = InMemoryCapturedLinkRepository()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(
-        _build_trip_target(
-            public_database_url="https://www.notion.so/public-trip-lodgings",
-        )
-    )
     display_items = [
         _build_captured_link(
             "https://www.booking.com/hotel/jp/foo.html",
@@ -3052,9 +2475,7 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             trip_display_repository=_build_trip_display_repository(
                 display_items,
-                notion_target_repository=notion_target_repository,
             ),
-            notion_target_repository=notion_target_repository,
         )
     )
 
@@ -3064,7 +2485,7 @@ def test_line_webhook_trip_detail_page_renders_and_filters_candidates() -> None:
     assert "Foo Hotel" in response.text
     assert "Bar Hotel" in response.text
     assert "Dismissed Home" not in response.text
-    assert "開啟 Notion 匯出" in response.text
+    assert "notion" not in response.text.lower()
     assert "東京新宿區" in response.text
     assert "不考慮這間" in response.text
     assert 'class="card-thumbnail"' in response.text
@@ -3112,23 +2533,13 @@ def test_line_webhook_trip_detail_page_rejects_invalid_token() -> None:
     assert response.json()["detail"] == "Invalid trip display link."
 
 
-def test_line_webhook_runs_pending_notion_sync_command() -> None:
+def test_line_webhook_runs_pending_trip_refresh_command() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_repository = InMemoryNotionSyncRepository(
-        pending_items=[
-            _build_notion_candidate("doc-1"),
-            _build_notion_candidate("doc-2"),
-            _build_notion_candidate("doc-other-group", group_id="Cgroup999"),
-        ]
-    )
-    notion_service = FakeNotionSyncService()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(_build_trip_target())
     map_enrichment_repository = InMemoryMapEnrichmentRepository(
         pending_items=[
             MapEnrichmentCandidate(
@@ -3166,9 +2577,6 @@ def test_line_webhook_runs_pending_notion_sync_command() -> None:
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
         )
     )
 
@@ -3196,16 +2604,12 @@ def test_line_webhook_runs_pending_notion_sync_command() -> None:
         "https://www.agoda.com/doc-2.html",
     ]
     assert map_enrichment_repository.resolved == ["doc-1", "doc-2"]
-    assert notion_repository.pending_limits == [None]
-    assert notion_repository.all_limits == []
-    assert notion_repository.pending_source_scopes == [_build_trip_scope()]
-    assert notion_service.calls == ["doc-1", "doc-2"]
     assert fake_line_client.calls == [
-        ("reply-token", "Notion 整理完成：處理 2 筆，新增 2 筆，更新 0 筆，失敗 0 筆。")
+        ("reply-token", "旅次資料整理完成：處理 2 筆，完整解析 2 筆，部分更新 0 筆，失敗 0 筆。")
     ]
 
 
-def test_line_webhook_control_group_runs_pending_notion_sync_for_target_group() -> None:
+def test_line_webhook_control_group_runs_pending_trip_refresh_for_target_group() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
@@ -3214,16 +2618,6 @@ def test_line_webhook_control_group_runs_pending_notion_sync_for_target_group() 
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_repository = InMemoryNotionSyncRepository(
-        pending_items=[
-            _build_notion_candidate("doc-1", group_id="Ctarget123"),
-            _build_notion_candidate("doc-2", group_id="Ctarget123"),
-            _build_notion_candidate("doc-control", group_id="Ccontrol123"),
-        ]
-    )
-    notion_service = FakeNotionSyncService()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(_build_trip_target(group_id="Ctarget123"))
     map_enrichment_repository = InMemoryMapEnrichmentRepository(
         pending_items=[
             MapEnrichmentCandidate(
@@ -3261,9 +2655,6 @@ def test_line_webhook_control_group_runs_pending_notion_sync_for_target_group() 
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
             trip_group_id="Ctarget123",
         )
     )
@@ -3286,140 +2677,18 @@ def test_line_webhook_control_group_runs_pending_notion_sync_for_target_group() 
     assert map_enrichment_repository.pending_source_scopes == [
         _build_trip_scope(group_id="Ctarget123")
     ]
-    assert notion_repository.pending_source_scopes == [
-        _build_trip_scope(group_id="Ctarget123")
-    ]
-    assert notion_service.calls == ["doc-1", "doc-2"]
     assert fake_line_client.calls == [
-        ("reply-token", "Notion 整理完成：處理 2 筆，新增 2 筆，更新 0 筆，失敗 0 筆。")
+        ("reply-token", "旅次資料整理完成：處理 2 筆，完整解析 2 筆，部分更新 0 筆，失敗 0 筆。")
     ]
 
 
-def test_line_webhook_runs_pending_notion_sync_command_with_scoped_target() -> None:
+def test_line_webhook_runs_force_trip_refresh_command() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_repository = InMemoryNotionSyncRepository(
-        pending_items=[
-            _build_notion_candidate("doc-1", group_id="Cgroup123"),
-            _build_notion_candidate("doc-2", group_id="Cgroup123"),
-        ]
-    )
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_target_repository.save(
-        _build_trip_target(
-            parent_page_id="page-group-123",
-            database_id="db-group-123",
-            data_source_id="ds-group-123",
-            database_title="Group Trip",
-            database_url="https://www.notion.so/workspace/db-group-123?v=view-group-123",
-            public_database_url="https://www.notion.so/public-group-123",
-        )
-    )
-    notion_service = FakeNotionSyncService()
-    map_enrichment_repository = InMemoryMapEnrichmentRepository(
-        pending_items=[
-            MapEnrichmentCandidate(
-                "doc-1",
-                "https://short.example/doc-1",
-                "https://www.booking.com/hotel/jp/doc-1.html",
-            ),
-            MapEnrichmentCandidate(
-                "doc-2",
-                "https://www.agoda.com/doc-2.html",
-            ),
-        ]
-    )
-    map_enrichment_service = FakeMapEnrichmentService(
-        {
-            "https://www.booking.com/hotel/jp/doc-1.html": EnrichedLodgingMap(
-                property_name="Doc 1 Hotel",
-                latitude=35.1,
-                longitude=139.1,
-                map_source="structured_data_geo",
-            ),
-            "https://www.agoda.com/doc-2.html": EnrichedLodgingMap(
-                property_name="Doc 2 Hotel",
-                latitude=35.2,
-                longitude=139.2,
-                map_source="structured_data_geo",
-            ),
-        }
-    )
-    client = TestClient(
-        create_app(
-            settings=settings,
-            collector=repository,
-            line_client=fake_line_client,
-            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
-            map_enrichment_repository=map_enrichment_repository,
-            map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
-        )
-    )
-
-    payload = _build_payload("/整理", source_type="group", group_id="Cgroup123")
-    body = json.dumps(payload).encode("utf-8")
-    signature = generate_signature(settings.line_channel_secret, body)
-
-    response = client.post(
-        "/webhooks/line",
-        content=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Line-Signature": signature,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True, "captured": 0}
-    assert notion_service.target_calls == [
-        ("ds-group-123", "doc-1"),
-        ("ds-group-123", "doc-2"),
-    ]
-    assert fake_line_client.calls == [
-        ("reply-token", "Notion 整理完成：處理 2 筆，新增 2 筆，更新 0 筆，失敗 0 筆。")
-    ]
-
-
-def test_line_webhook_runs_force_notion_sync_command() -> None:
-    settings = Settings(
-        line_channel_secret="super-secret",
-        line_channel_access_token="line-token",
-    )
-    fake_line_client = FakeLineClient()
-    repository = InMemoryCapturedLinkRepository()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_repository = InMemoryNotionSyncRepository(
-        all_items=[
-            _build_notion_candidate(
-                "doc-1",
-                notion_page_id="page-doc-1",
-                notion_data_source_id="ds-current",
-                source_type="room",
-                group_id=None,
-                room_id="Rroom123",
-            ),
-            _build_notion_candidate(
-                "doc-2",
-                source_type="room",
-                group_id=None,
-                room_id="Rroom123",
-            ),
-            _build_notion_candidate(
-                "doc-other-room",
-                source_type="room",
-                group_id=None,
-                room_id="Rroom999",
-            ),
-        ]
-    )
-    notion_service = FakeNotionSyncService()
     map_enrichment_repository = InMemoryMapEnrichmentRepository(
         all_items=[
             MapEnrichmentCandidate(
@@ -3457,9 +2726,6 @@ def test_line_webhook_runs_force_notion_sync_command() -> None:
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
             trip_source_type="room",
             trip_group_id=None,
             trip_room_id="Rroom123",
@@ -3501,23 +2767,12 @@ def test_line_webhook_runs_force_notion_sync_command() -> None:
         "https://www.agoda.com/doc-2.html",
     ]
     assert map_enrichment_repository.resolved == ["doc-1", "doc-2"]
-    assert notion_repository.pending_limits == []
-    assert notion_repository.all_limits == [None]
-    assert notion_repository.all_source_scopes == [
-        _build_trip_scope(
-            source_type="room",
-            group_id=None,
-            room_id="Rroom123",
-        )
-    ]
-    assert notion_service.setup_calls == [DEFAULT_TRIP_TITLE]
-    assert notion_service.calls == ["doc-1", "doc-2"]
     assert fake_line_client.calls == [
-        ("reply-token", "Notion 全部重來完成：處理 2 筆，新增 1 筆，更新 1 筆，失敗 0 筆。")
+        ("reply-token", "旅次資料全部重來完成：處理 2 筆，完整解析 2 筆，部分更新 0 筆，失敗 0 筆。")
     ]
 
 
-def test_line_webhook_control_group_runs_force_notion_sync_for_target_group() -> None:
+def test_line_webhook_control_group_runs_force_trip_refresh_for_target_group() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
@@ -3526,20 +2781,6 @@ def test_line_webhook_control_group_runs_force_notion_sync_for_target_group() ->
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_target_repository = InMemoryNotionTargetRepository()
-    notion_repository = InMemoryNotionSyncRepository(
-        all_items=[
-            _build_notion_candidate(
-                "doc-1",
-                group_id="Ctarget123",
-                notion_page_id="page-doc-1",
-                notion_data_source_id="ds-current",
-            ),
-            _build_notion_candidate("doc-2", group_id="Ctarget123"),
-            _build_notion_candidate("doc-control", group_id="Ccontrol123"),
-        ]
-    )
-    notion_service = FakeNotionSyncService()
     map_enrichment_repository = InMemoryMapEnrichmentRepository(
         all_items=[
             MapEnrichmentCandidate(
@@ -3577,9 +2818,6 @@ def test_line_webhook_control_group_runs_force_notion_sync_for_target_group() ->
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
-            notion_target_repository=notion_target_repository,
             trip_group_id="Ctarget123",
         )
     )
@@ -3602,17 +2840,12 @@ def test_line_webhook_control_group_runs_force_notion_sync_for_target_group() ->
     assert map_enrichment_repository.all_source_scopes == [
         _build_trip_scope(group_id="Ctarget123")
     ]
-    assert notion_repository.all_source_scopes == [
-        _build_trip_scope(group_id="Ctarget123")
-    ]
-    assert notion_service.setup_calls == [DEFAULT_TRIP_TITLE]
-    assert notion_service.calls == ["doc-1", "doc-2"]
     assert fake_line_client.calls == [
-        ("reply-token", "Notion 全部重來完成：處理 2 筆，新增 1 筆，更新 1 筆，失敗 0 筆。")
+        ("reply-token", "旅次資料全部重來完成：處理 2 筆，完整解析 2 筆，部分更新 0 筆，失敗 0 筆。")
     ]
 
 
-def test_line_webhook_reports_when_notion_sync_is_not_configured() -> None:
+def test_line_webhook_reports_when_trip_refresh_is_not_configured() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
@@ -3644,10 +2877,10 @@ def test_line_webhook_reports_when_notion_sync_is_not_configured() -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
-    assert fake_line_client.calls == [("reply-token", "Notion sync 尚未設定完成。")]
+    assert fake_line_client.calls == [("reply-token", "住宿整理功能尚未設定完成。")]
 
 
-def test_line_webhook_reports_when_notion_list_link_is_not_configured() -> None:
+def test_line_webhook_reports_when_trip_display_link_is_not_configured() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
         line_channel_access_token="line-token",
@@ -3682,6 +2915,18 @@ def test_line_webhook_reports_when_notion_list_link_is_not_configured() -> None:
     assert fake_line_client.calls == [("reply-token", "旅次顯示頁尚未設定完成。")]
 
 
+def test_notion_sync_routes_are_not_registered() -> None:
+    client = TestClient(
+        create_app(
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+        )
+    )
+
+    response = client.post("/jobs/notion-sync/run")
+
+    assert response.status_code == 404
+
+
 def test_line_webhook_reports_when_chat_source_cannot_be_identified() -> None:
     settings = Settings(
         line_channel_secret="super-secret",
@@ -3689,18 +2934,12 @@ def test_line_webhook_reports_when_chat_source_cannot_be_identified() -> None:
     )
     fake_line_client = FakeLineClient()
     repository = InMemoryCapturedLinkRepository()
-    notion_repository = InMemoryNotionSyncRepository(
-        pending_items=[_build_notion_candidate("doc-1")]
-    )
-    notion_service = FakeNotionSyncService()
     client = TestClient(
         create_app(
             settings=settings,
             collector=repository,
             line_client=fake_line_client,
             lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
-            notion_sync_repository=notion_repository,
-            notion_sync_service=notion_service,
         )
     )
 
@@ -3720,10 +2959,8 @@ def test_line_webhook_reports_when_chat_source_cannot_be_identified() -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True, "captured": 0}
     assert repository.items == []
-    assert notion_repository.pending_limits == []
-    assert notion_service.calls == []
     assert fake_line_client.calls == [
-        ("reply-token", "無法辨識目前聊天室，暫時無法執行 Notion sync。")
+        ("reply-token", "無法辨識目前聊天室，暫時無法整理旅次資料。")
     ]
 
 
@@ -4117,5 +3354,5 @@ def test_line_webhook_only_checks_duplicates_within_same_chat() -> None:
     assert response.json() == {"ok": True, "captured": 1}
     assert len(repository.items) == 2
     assert fake_line_client.calls == [
-        ("reply-token", "已收到 1 筆住宿連結，會自動整理並同步到 Notion。")
+        ("reply-token", "已收到 1 筆住宿連結，會整理到目前旅次。")
     ]

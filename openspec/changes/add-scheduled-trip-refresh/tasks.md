@@ -1,7 +1,7 @@
 ## 1. Refresh Coordinator
 
 - [ ] 1.1 Add a trip refresh job that enumerates active trips and coordinates per-trip refresh execution
-- [ ] 1.2 Wire the coordinator to trip-scoped enrichment and Notion sync flows
+- [ ] 1.2 Wire the coordinator to trip-scoped lodging/map enrichment flows
 - [ ] 1.3 Add tests covering active-trip-only enumeration and archived-trip skipping
 
 ## 2. Failure Isolation And Reporting

@@ -6,7 +6,6 @@ from typing import Any, Protocol, Sequence
 from app.line_media import normalize_line_image_url
 from app.models import LineTrip
 from app.models.captured_lodging_link import LODGING_DECISION_STATUS_VALUES
-from app.notion_sync import NotionTargetRepository, build_source_scope
 from app.trip_display.models import (
     TripDisplayFilters,
     TripDisplayLodging,
@@ -39,10 +38,8 @@ class MongoTripDisplayRepository:
     def __init__(
         self,
         collection: MongoCollection,
-        notion_target_repository: NotionTargetRepository | None = None,
     ) -> None:
         self.collection = collection
-        self.notion_target_repository = notion_target_repository
 
     def build_trip_display(
         self,
@@ -54,10 +51,6 @@ class MongoTripDisplayRepository:
             self.collection.find(_build_trip_query(trip)).sort("captured_at", -1)
         )
         all_lodgings = tuple(_build_lodging(document) for document in documents)
-        notion_export_url = _resolve_notion_export_url(
-            trip=trip,
-            notion_target_repository=self.notion_target_repository,
-        )
         filtered_lodgings = _sort_lodgings(
             _filter_lodgings(all_lodgings, active_filters),
             active_filters.sort,
@@ -106,7 +99,6 @@ class MongoTripDisplayRepository:
             candidate_count=candidate_count,
             booked_count=booked_count,
             dismissed_count=dismissed_count,
-            notion_export_url=notion_export_url,
             generated_at=generated_at,
             platform_options=platform_options,
         )
@@ -150,7 +142,6 @@ def _build_lodging(document: dict[str, Any]) -> TripDisplayLodging:
         ),
         google_maps_url=document.get("google_maps_url"),
         google_maps_search_url=document.get("google_maps_search_url"),
-        notion_page_url=document.get("notion_page_url"),
         decision_status=_resolve_decision_status(document.get("decision_status")),
         decision_updated_at=document.get("decision_updated_at"),
         decision_updated_by_user_id=document.get("decision_updated_by_user_id"),
@@ -168,39 +159,12 @@ def _resolve_updated_at(document: dict[str, Any]) -> datetime | None:
             document.get("details_resolved_at"),
             document.get("pricing_resolved_at"),
             document.get("decision_updated_at"),
-            document.get("notion_last_synced_at"),
         )
         if isinstance(value, datetime)
     ]
     if not timestamps:
         return None
     return max(timestamps)
-
-
-def _resolve_notion_export_url(
-    *,
-    trip: LineTrip,
-    notion_target_repository: NotionTargetRepository | None,
-) -> str | None:
-    if notion_target_repository is None:
-        return None
-
-    source_scope = build_source_scope(
-        source_type=trip.source_type,
-        group_id=trip.group_id,
-        room_id=trip.room_id,
-        user_id=trip.user_id,
-        trip_id=trip.trip_id,
-        trip_title=trip.title,
-    )
-    if source_scope is None:
-        return None
-
-    target = notion_target_repository.find_by_source_scope(source_scope)
-    if target is None:
-        return None
-    return target.share_url
-
 
 def _filter_lodgings(
     lodgings: Sequence[TripDisplayLodging],

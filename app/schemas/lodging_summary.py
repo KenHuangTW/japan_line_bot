@@ -36,7 +36,6 @@ class LodgingDecisionSummaryLodging(BaseModel):
     amenities: list[str] = Field(default_factory=list, max_length=20)
     maps_url: str | None = None
     target_url: str = Field(min_length=1)
-    notion_page_url: str | None = None
     captured_at: datetime | None = None
     updated_at: datetime | None = None
 

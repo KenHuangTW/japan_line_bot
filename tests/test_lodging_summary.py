@@ -213,7 +213,6 @@ def _build_surface() -> TripDisplaySurface:
                 is_sold_out=False,
                 amenities=("wifi", "kitchen"),
                 google_maps_url="https://maps.google.com/?q=35.1,139.1",
-                notion_page_url="https://www.notion.so/foo",
                 captured_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
                 updated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
             ),

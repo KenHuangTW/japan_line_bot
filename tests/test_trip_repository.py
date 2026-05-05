@@ -5,7 +5,7 @@ from typing import Any
 
 from app.controllers.repositories.mongo_trip_repository import MongoTripRepository
 from app.models.trip import LineTrip
-from app.notion_sync.models import NotionSyncSourceScope
+from app.source_scope import SourceScope
 
 
 class FakeInsertOneResult:
@@ -53,7 +53,7 @@ class FakeCollection:
 def test_mongo_trip_repository_can_create_switch_and_archive_trips() -> None:
     collection = FakeCollection()
     repository = MongoTripRepository(collection)
-    source_scope = NotionSyncSourceScope(source_type="group", group_id="Cgroup123")
+    source_scope = SourceScope(source_type="group", group_id="Cgroup123")
 
     first_trip = repository.create_trip(source_scope, "東京 2026")
     second_trip = repository.create_trip(source_scope, "京都 2026")
@@ -99,7 +99,7 @@ def test_mongo_trip_repository_can_backfill_and_lookup_display_token() -> None:
         }
     )
     repository = MongoTripRepository(collection)
-    source_scope = NotionSyncSourceScope(source_type="group", group_id="Cgroup123")
+    source_scope = SourceScope(source_type="group", group_id="Cgroup123")
 
     active_trip = repository.get_active_trip(source_scope)
 

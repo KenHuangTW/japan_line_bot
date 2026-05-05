@@ -22,6 +22,7 @@ from app.lodging_summary import (
 from app.map_enrichment import (
     LodgingMapEnrichmentService,
     MapEnrichmentRepository,
+    MapEnrichmentSummary,
     retry_all_map_enrichment_documents,
     run_map_enrichment_job,
 )
@@ -31,15 +32,8 @@ from app.models import (
     LodgingDecisionStatus,
     LodgingLinkMatch,
 )
-from app.notion_sync import (
-    NotionSyncRepository,
-    NotionSyncSourceScope,
-    NotionSyncSummary,
-    NotionTargetManager,
-    build_source_scope,
-    run_notion_sync_job,
-)
 from app.schemas.line_webhook import LineEventSource, LineWebhookRequest
+from app.source_scope import SourceScope, build_source_scope
 from app.trip_display import (
     TripDisplayFilters,
     TripDisplayRepository,
@@ -55,10 +49,10 @@ TRIP_CREATE_COMMAND = "/建立旅次"
 TRIP_SWITCH_COMMAND = "/切換旅次"
 TRIP_CURRENT_COMMAND = "/目前旅次"
 TRIP_ARCHIVE_COMMAND = "/封存旅次"
-NOTION_LIST_COMMAND = "/清單"
+TRIP_LIST_COMMAND = "/清單"
 SUMMARY_COMMAND = "/摘要"
-NOTION_SYNC_PENDING_COMMAND = "/整理"
-NOTION_SYNC_FORCE_COMMAND = "/全部重來"
+TRIP_REFRESH_COMMAND = "/整理"
+TRIP_FORCE_REFRESH_COMMAND = "/全部重來"
 TRIP_FEATURE_UNAVAILABLE_MESSAGE = "旅次功能尚未設定完成。"
 TRIP_REQUIRED_MESSAGE = (
     "目前沒有啟用中的旅次，請先用 /建立旅次 <名稱> 建立，或用 /切換旅次 <名稱> 切換。"
@@ -77,15 +71,15 @@ LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (TRIP_SWITCH_COMMAND, "切換到既有旅次，格式：/切換旅次 <名稱>"),
     (TRIP_CURRENT_COMMAND, "查看目前啟用中的旅次"),
     (TRIP_ARCHIVE_COMMAND, "封存目前旅次並清空 active trip"),
-    (NOTION_LIST_COMMAND, "回傳目前旅次的住宿 preview 與詳情頁連結"),
+    (TRIP_LIST_COMMAND, "回傳目前旅次的住宿 preview 與詳情頁連結"),
     (SUMMARY_COMMAND, "產生目前旅次的 AI 決策摘要"),
     (
-        NOTION_SYNC_PENDING_COMMAND,
-        "執行 Notion sync，只整理目前旅次中 pending / 尚未同步完成的資料",
+        TRIP_REFRESH_COMMAND,
+        "整理目前旅次中尚未補齊的住宿與地圖資料",
     ),
     (
-        NOTION_SYNC_FORCE_COMMAND,
-        "忽略既有同步狀態，只把目前旅次中的資料強制重新同步到 Notion",
+        TRIP_FORCE_REFRESH_COMMAND,
+        "忽略既有整理狀態，重新整理目前旅次中的所有住宿與地圖資料",
     ),
 )
 
@@ -125,8 +119,6 @@ async def _handle_line_command(
     trip_display_repository: TripDisplayRepository | None,
     decision_summary_service: DecisionSummaryService | None,
     trip_detail_url_builder: Callable[[str], str] | None,
-    notion_sync_repository: NotionSyncRepository | None,
-    notion_target_manager: NotionTargetManager,
     map_enrichment_repository: MapEnrichmentRepository | None,
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> bool:
@@ -203,7 +195,7 @@ async def _handle_line_command(
         )
         return True
 
-    if command == NOTION_LIST_COMMAND:
+    if command == TRIP_LIST_COMMAND:
         _, active_trip, error_message = _resolve_command_active_trip_scope(
             settings=settings,
             source=source,
@@ -263,12 +255,12 @@ async def _handle_line_command(
         )
         return True
 
-    if command == NOTION_SYNC_PENDING_COMMAND:
+    if command == TRIP_REFRESH_COMMAND:
         trip_scope, _, error_message = _resolve_command_active_trip_scope(
             settings=settings,
             source=source,
             trip_repository=trip_repository,
-            action_label="執行 Notion sync",
+            action_label="整理旅次資料",
         )
         await _reply_if_possible(
             settings=settings,
@@ -277,9 +269,7 @@ async def _handle_line_command(
             text=(
                 error_message
                 if error_message is not None
-                else await _run_notion_sync_command(
-                    repository=notion_sync_repository,
-                    target_manager=notion_target_manager,
+                else await _run_trip_refresh_command(
                     force=False,
                     source_scope=trip_scope,
                     map_enrichment_repository=map_enrichment_repository,
@@ -289,12 +279,12 @@ async def _handle_line_command(
         )
         return True
 
-    if command == NOTION_SYNC_FORCE_COMMAND:
+    if command == TRIP_FORCE_REFRESH_COMMAND:
         trip_scope, _, error_message = _resolve_command_active_trip_scope(
             settings=settings,
             source=source,
             trip_repository=trip_repository,
-            action_label="執行 Notion sync",
+            action_label="重新整理旅次資料",
         )
         await _reply_if_possible(
             settings=settings,
@@ -303,9 +293,7 @@ async def _handle_line_command(
             text=(
                 error_message
                 if error_message is not None
-                else await _run_notion_sync_command(
-                    repository=notion_sync_repository,
-                    target_manager=notion_target_manager,
+                else await _run_trip_refresh_command(
                     force=True,
                     source_scope=trip_scope,
                     map_enrichment_repository=map_enrichment_repository,
@@ -494,7 +482,7 @@ def _resolve_chat_scope(
     *,
     source: LineEventSource,
     action_label: str,
-) -> tuple[NotionSyncSourceScope | None, str | None]:
+) -> tuple[SourceScope | None, str | None]:
     source_scope = _build_source_scope(source)
     if source_scope is None:
         return None, f"無法辨識目前聊天室，暫時無法{action_label}。"
@@ -506,7 +494,7 @@ def _resolve_command_chat_scope(
     settings: Settings,
     source: LineEventSource,
     action_label: str,
-) -> tuple[NotionSyncSourceScope | None, str | None]:
+) -> tuple[SourceScope | None, str | None]:
     return _resolve_chat_scope(
         source=_resolve_target_source(settings=settings, source=source),
         action_label=action_label,
@@ -518,7 +506,7 @@ def _resolve_active_trip_scope(
     source: LineEventSource,
     trip_repository: TripRepository | None,
     action_label: str,
-) -> tuple[NotionSyncSourceScope | None, LineTrip | None, str | None]:
+) -> tuple[SourceScope | None, LineTrip | None, str | None]:
     chat_scope, error_message = _resolve_chat_scope(
         source=source,
         action_label=action_label,
@@ -551,7 +539,7 @@ def _resolve_command_active_trip_scope(
     source: LineEventSource,
     trip_repository: TripRepository | None,
     action_label: str,
-) -> tuple[NotionSyncSourceScope | None, LineTrip | None, str | None]:
+) -> tuple[SourceScope | None, LineTrip | None, str | None]:
     return _resolve_active_trip_scope(
         source=_resolve_target_source(settings=settings, source=source),
         trip_repository=trip_repository,
@@ -559,126 +547,56 @@ def _resolve_command_active_trip_scope(
     )
 
 
-async def _run_notion_sync_command(
+async def _run_trip_refresh_command(
     *,
-    repository: NotionSyncRepository | None,
-    target_manager: NotionTargetManager,
     force: bool,
-    source_scope: NotionSyncSourceScope | None,
+    source_scope: SourceScope | None,
     map_enrichment_repository: MapEnrichmentRepository | None,
     map_enrichment_service: LodgingMapEnrichmentService | None,
 ) -> str:
     if source_scope is None:
         return TRIP_REQUIRED_MESSAGE
-
-    resolved_service = target_manager.resolve_service(source_scope)
-    if repository is None or target_manager.default_service is None:
-        return "Notion sync 尚未設定完成。"
+    if map_enrichment_repository is None or map_enrichment_service is None:
+        return "住宿整理功能尚未設定完成。"
 
     try:
-        if force:
-            resolved_service = await target_manager.setup_database(
-                title=source_scope.trip_title,
-                source_scope=(
-                    source_scope
-                    if source_scope.trip_id is not None
-                    or (
-                        resolved_service is not None
-                        and resolved_service.target_source == "scoped"
-                    )
-                    else None
-                ),
-            )
-            if (
-                resolved_service is None
-                or not resolved_service.service.is_sync_configured
-            ):
-                return "Notion sync 尚未設定完成。"
-        elif (
-            resolved_service is None or not resolved_service.service.is_sync_configured
-        ):
-            return "Notion sync 尚未設定完成。"
-        await _run_lodging_enrichment_before_notion_sync(
+        summary = await _run_lodging_enrichment_for_trip(
             repository=map_enrichment_repository,
             service=map_enrichment_service,
             force=force,
             source_scope=source_scope,
         )
-        summary = await run_notion_sync_job(
-            repository=repository,
-            service=resolved_service.service,
-            limit=None,
-            force=force,
-            source_scope=source_scope,
-            target_manager=target_manager,
-        )
     except Exception:
-        logger.exception("Failed to run Notion sync command from LINE.")
-        action = "全部重來" if force else "整理"
-        return f"Notion {action}失敗，請稍後再試。"
+        logger.exception("Failed to run trip refresh command from LINE.")
+        return "旅次資料整理失敗，請稍後再試。"
 
-    return _format_notion_sync_summary(summary=summary, force=force)
+    return _format_trip_refresh_summary(summary=summary, force=force)
 
 
-async def _run_lodging_enrichment_before_notion_sync(
+async def _run_lodging_enrichment_for_trip(
     *,
     repository: MapEnrichmentRepository | None,
     service: LodgingMapEnrichmentService | None,
     force: bool,
-    source_scope: NotionSyncSourceScope,
-) -> None:
+    source_scope: SourceScope,
+) -> Any:
     if repository is None or service is None:
-        return
+        raise RuntimeError("Map enrichment is not configured.")
 
     if force:
-        await retry_all_map_enrichment_documents(
+        return await retry_all_map_enrichment_documents(
             repository=repository,
             service=service,
             limit=None,
             source_scope=source_scope,
         )
-        return
 
-    await run_map_enrichment_job(
+    return await run_map_enrichment_job(
         repository=repository,
         service=service,
         limit=None,
         source_scope=source_scope,
     )
-
-
-async def _run_automatic_notion_sync_after_capture(
-    *,
-    source_scope: NotionSyncSourceScope,
-    notion_sync_repository: NotionSyncRepository | None,
-    notion_target_manager: NotionTargetManager,
-    map_enrichment_repository: MapEnrichmentRepository | None,
-    map_enrichment_service: LodgingMapEnrichmentService | None,
-) -> None:
-    resolved_service = notion_target_manager.resolve_service(source_scope)
-    if notion_sync_repository is None or resolved_service is None:
-        return
-
-    if not resolved_service.service.is_sync_configured:
-        return
-
-    try:
-        await _run_lodging_enrichment_before_notion_sync(
-            repository=map_enrichment_repository,
-            service=map_enrichment_service,
-            force=False,
-            source_scope=source_scope,
-        )
-        await run_notion_sync_job(
-            repository=notion_sync_repository,
-            service=resolved_service.service,
-            limit=None,
-            force=False,
-            source_scope=source_scope,
-            target_manager=notion_target_manager,
-        )
-    except Exception:
-        logger.exception("Failed to run automatic Notion sync after capture.")
 
 
 def _build_trip_list_reply(
@@ -717,8 +635,8 @@ def _format_help_message() -> str:
         "旅次模式操作：\n"
         f"1. {TRIP_CREATE_COMMAND} 東京 2026\n"
         "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
-        f"3. {NOTION_SYNC_PENDING_COMMAND} 同步目前旅次到 Notion\n"
-        f"4. {NOTION_LIST_COMMAND} 查看目前旅次清單\n"
+        f"3. {TRIP_REFRESH_COMMAND} 整理目前旅次資料\n"
+        f"4. {TRIP_LIST_COMMAND} 查看目前旅次清單\n"
         f"5. {SUMMARY_COMMAND} 產生 AI 決策摘要\n"
         "\n"
         "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
@@ -757,22 +675,22 @@ async def _run_decision_summary_command(
     return build_line_lodging_decision_summary(result)
 
 
-def _format_notion_sync_summary(
+def _format_trip_refresh_summary(
     *,
-    summary: NotionSyncSummary,
+    summary: MapEnrichmentSummary,
     force: bool,
 ) -> str:
     action = "全部重來" if force else "整理"
     return (
-        f"Notion {action}完成："
+        f"旅次資料{action}完成："
         f"處理 {summary.processed} 筆，"
-        f"新增 {summary.created} 筆，"
-        f"更新 {summary.updated} 筆，"
+        f"完整解析 {summary.resolved} 筆，"
+        f"部分更新 {summary.partial} 筆，"
         f"失敗 {summary.failed} 筆。"
     )
 
 
-def _build_source_scope(source: LineEventSource) -> NotionSyncSourceScope | None:
+def _build_source_scope(source: LineEventSource) -> SourceScope | None:
     try:
         return build_source_scope(
             source_type=source.type,
@@ -929,13 +847,10 @@ async def process_events(
     trip_repository: TripRepository | None = None,
     trip_display_repository: TripDisplayRepository | None = None,
     decision_summary_service: DecisionSummaryService | None = None,
-    notion_sync_repository: NotionSyncRepository | None = None,
-    notion_target_manager: NotionTargetManager | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
     trip_detail_url_builder: Callable[[str], str] | None = None,
 ) -> int:
-    active_notion_target_manager = notion_target_manager or NotionTargetManager(None)
     captured_total = 0
 
     for event in payload.events:
@@ -977,8 +892,6 @@ async def process_events(
             trip_display_repository=trip_display_repository,
             decision_summary_service=decision_summary_service,
             trip_detail_url_builder=trip_detail_url_builder,
-            notion_sync_repository=notion_sync_repository,
-            notion_target_manager=active_notion_target_manager,
             map_enrichment_repository=map_enrichment_repository,
             map_enrichment_service=map_enrichment_service,
         ):
@@ -1075,15 +988,6 @@ async def process_events(
 
         captured_count = repository.append_many(records) if records else 0
         captured_total += captured_count
-
-        if captured_count > 0:
-            await _run_automatic_notion_sync_after_capture(
-                source_scope=trip_scope,
-                notion_sync_repository=notion_sync_repository,
-                notion_target_manager=active_notion_target_manager,
-                map_enrichment_repository=map_enrichment_repository,
-                map_enrichment_service=map_enrichment_service,
-            )
 
         reply_messages = [
             settings.reply_duplicate_link_template.format(url=url)

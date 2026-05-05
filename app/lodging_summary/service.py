@@ -118,7 +118,6 @@ def _build_summary_request(
                 amenities=list(lodging.amenities),
                 maps_url=lodging.maps_url,
                 target_url=lodging.target_url,
-                notion_page_url=lodging.notion_page_url,
                 captured_at=lodging.captured_at,
                 updated_at=lodging.updated_at,
             )

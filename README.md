@@ -1,6 +1,6 @@
 # Nihon LINE Bot
 
-Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓每個 LINE 聊天室先切到「目前旅次」，再把聊天裡出現的住宿連結收進 MongoDB、補齊住宿頁地圖與價格資訊，並直接從 Mongo canonical data 產生 `/清單` preview、只讀旅次頁與 `/摘要` AI 決策摘要。Notion 仍然保留，但定位改成可選的 export / manual maintenance surface，而不是主要瀏覽介面。
+Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓每個 LINE 聊天室先切到「目前旅次」，再把聊天裡出現的住宿連結收進 MongoDB、補齊住宿頁地圖與價格資訊，並直接從 Mongo canonical data 產生 `/清單` preview、只讀旅次頁與 `/摘要` AI 決策摘要。
 
 目前支援的主流程：
 
@@ -12,7 +12,6 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 6. 透過 enrichment job 補上名稱、地址、座標、設備、價格與 Google Maps 連結。
 7. `/清單` 會直接從 Mongo canonical data 回傳旅次 preview，並附上只讀旅次頁連結。
 8. `/摘要` 會直接根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。
-9. 透過 Notion sync job 將資料建立或更新到旅次對應的 Notion data source；若有設定 target，旅次頁也會提供 Notion 匯出捷徑。
 
 ## 功能重點
 
@@ -25,7 +24,7 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - `/清單` 會回 LINE Flex carousel，每筆候選住宿一張卡片；若 Mongo 已存好 `line_hero_image_url`，會直接顯示 hero image，再引導到房源頁與旅次詳情頁。
 - `/摘要` 會以 Gemini structured output 回傳目前旅次的候選住宿、優缺點、缺漏資訊與討論重點。
 - 可選擇在成功收錄或發現重複連結時直接回覆 LINE。
-- 提供住宿 enrichment API 與 Notion sync API，方便手動觸發或串接排程。
+- 提供住宿 enrichment API，方便手動觸發或串接排程。
 - 提供 `/help`、`/ping`、`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/摘要`、`/整理`、`/全部重來` 十個 LINE 指令。
 - 提供 shell / PowerShell 腳本協助啟動 MongoDB、服務與測試。
 
@@ -47,8 +46,6 @@ LINE message
   -> /trips/{display_token} read-only trip detail surface
   -> /摘要 Gemini decision summary
   -> lodging enrichment job
-  -> optional Notion sync job
-  -> trip-scoped Notion data source (optional export)
 ```
 
 ## 專案結構
@@ -60,7 +57,6 @@ app/
   lodging_links/       Booking / Agoda 網址分類與短網址解析流程
   map_enrichment/      住宿頁地圖、地址、價格、設備資料解析
   models/              MongoDB 文件與共用 model
-  notion_sync/         Notion data source 建立與同步邏輯
   routers/             FastAPI 路由
   schemas/             API request / response schema
   trip_display/        旅次顯示層的 query model、rendering 與 Mongo aggregation
@@ -83,7 +79,6 @@ test.sh / test.ps1     單元測試與 smoke test
 - Python 3.11
 - MongoDB 7.0 以上，或用 Docker Compose 啟動內建 MongoDB
 - LINE Messaging API channel
-- 若要同步 Notion：Notion integration token 與可寫入的 parent page / data source
 - 若要使用 `/摘要`：Gemini Developer API key
 - 若要使用 `start.sh` / `test.sh`：本機需有 conda
 
@@ -128,8 +123,6 @@ Copy-Item .env.example .env
 
 - `LINE_CHANNEL_SECRET`
 - `LINE_CHANNEL_ACCESS_TOKEN`
-
-如果只想先測 webhook 收錄到 MongoDB，不做 Notion sync，Notion 相關設定可以先留空。
 
 如果你要啟用 `/摘要` AI 決策摘要，另外需要：
 
@@ -256,7 +249,7 @@ curl http://127.0.0.1:8000/healthz
 | `LINE_COMMAND_CONTROL_TARGET_GROUP_ID` | 空字串 | 可選。被控制聊天室 B 的 LINE `groupId`；需與 `LINE_COMMAND_CONTROL_SOURCE_GROUP_ID` 一起設定才會生效。 |
 | `LINE_REPLY_ON_CAPTURE` | `true` | 收錄成功時是否回覆「已收到 N 筆住宿連結」。 |
 | `LINE_WELCOME_MESSAGE` | `已加入群組。請先用 /建立旅次 <名稱> 建立目前旅次，再貼 Booking、Agoda 或 Airbnb 的住宿連結。` | bot 加入群組時的歡迎訊息。 |
-| `REPLY_CAPTURE_TEMPLATE` | `已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。` | 成功收錄回覆模板。 |
+| `REPLY_CAPTURE_TEMPLATE` | `已收到 {count} 筆住宿連結，會整理到目前旅次。` | 成功收錄回覆模板。 |
 | `REPLY_DUPLICATE_LINK_TEMPLATE` | `你是不是在找這個\n{url}` | 重複連結回覆模板。 |
 | `SUPPORTED_DOMAINS` | `booking.com,agoda.com,airbnb.com,airbnb.com.tw` | 允許擷取的 domain 清單，逗號分隔。 |
 
@@ -269,22 +262,6 @@ curl http://127.0.0.1:8000/healthz
 | `MAP_ENRICHMENT_BATCH_SIZE` | `20` | API / job 預設一次處理幾筆待解析文件。 |
 | `MAP_ENRICHMENT_REQUEST_TIMEOUT` | `10.0` | 抓住宿頁與相關 HTTP request timeout。 |
 | `MAP_ENRICHMENT_MAX_RETRY_COUNT` | `3` | `map_status=failed` 之後最多自動重試次數。 |
-
-### Notion sync
-
-| 變數 | 預設值 | 說明 |
-| --- | --- | --- |
-| `NOTION_API_TOKEN` | 空字串 | Notion integration token。 |
-| `NOTION_PARENT_PAGE_ID` | 空字串 | 第一次建立資料庫時使用的 parent page。 |
-| `NOTION_DATABASE_ID` | 空字串 | 已存在的 Notion database id。 |
-| `NOTION_DATA_SOURCE_ID` | 空字串 | 已存在的 Notion data source id。 |
-| `NOTION_DATABASE_TITLE` | `Nihon LINE Bot Lodgings` | setup 時預設資料庫名稱。 |
-| `NOTION_DATABASE_URL` | 空字串 | 資料庫 URL 快取，可選填，供 Notion target 校正或 fallback 使用。 |
-| `NOTION_PUBLIC_DATABASE_URL` | 空字串 | 公開分享 URL 快取，可選填，供 Notion export target 使用。 |
-| `NOTION_TARGET_COLLECTION` | `notion_targets` | 儲存聊天室對 Notion target 映射的 Mongo collection。 |
-| `NOTION_API_VERSION` | `2026-03-11` | Notion API version header。 |
-| `NOTION_REQUEST_TIMEOUT` | `10.0` | Notion HTTP request timeout。 |
-| `NOTION_SYNC_BATCH_SIZE` | `20` | API / job 預設一次同步幾筆。 |
 
 ### Gemini AI 摘要
 
@@ -343,15 +320,14 @@ curl http://127.0.0.1:8000/healthz
 | `/封存旅次` | 封存目前旅次，並清空 active trip。 |
 | `/清單` | 回傳目前旅次的 LINE Flex carousel；每張卡片可點圖文開房源，並提供 `已訂這間` / `改回候選` 與旅次詳情入口。 |
 | `/摘要` | 根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。 |
-| `/整理` | 只針對目前旅次範圍，先跑 lodging enrichment，再同步 pending / failed / 有更新的資料到 Notion。 |
-| `/全部重來` | 只針對目前旅次範圍，忽略既有同步狀態，先重跑 enrichment，再強制同步所有資料到 Notion；若有預設 Notion parent page，也會自動建立該旅次的 target。 |
+| `/整理` | 只針對目前旅次範圍，整理尚未補齊的住宿、地圖、細節與價格資料。 |
+| `/全部重來` | 只針對目前旅次範圍，忽略既有整理狀態，重新整理所有住宿、地圖、細節與價格資料。 |
 
 注意：
 
 - 貼住宿連結前必須先有 active trip，否則 bot 只會回覆旅次建立 / 切換提示，不會收錄資料。
 - `/清單`、`/摘要`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
 - `已訂這間`、`改回候選`、`不考慮這間` 都是使用者決策狀態；這和來源網站解析出的 `可訂`、`已售完`、`待確認` 是兩組不同資訊。
-- Notion target 未設定完成時，`/清單` 仍可正常顯示 Mongo preview 與旅次頁，但不會出現 Notion 匯出捷徑；`/整理`、`/全部重來` 仍需要 Notion sync 設定。
 - `GEMINI_API_KEY` 未設定時，`/摘要` 會回覆 `AI 摘要尚未設定完成。`。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，指令仍會執行，但 bot 無法回覆訊息。
 
@@ -397,7 +373,7 @@ response：
 行為說明：
 
 - `display_token` 是穩定的旅次分享 token，不會暴露 raw `group_id` / `room_id` / `user_id`。
-- token 有效時，頁面會顯示住宿縮圖、名稱、平台、價格、可訂狀態、使用者決策狀態、地圖連結與 Notion 匯出捷徑（若該旅次有 target）。
+- token 有效時，頁面會顯示住宿縮圖、名稱、平台、價格、可訂狀態、使用者決策狀態與地圖連結。
 - 住宿卡片優先使用 `hero_image_url` 作為網頁縮圖，缺圖時會顯示固定尺寸 fallback，不影響卡片操作。
 - 預設會顯示 `候選中` 與 `已預訂`，隱藏 `不考慮`；需要整理或復原時可用 `decision_status=dismissed` 篩選。
 - token 無效時，會回 `404 Invalid trip display link.`。
@@ -449,119 +425,6 @@ Swagger tag 為 `lodging-enrichment`。
 4. 若需要全部重跑，呼叫 `POST /jobs/lodging-enrichment/documents/retry-all`
 5. 若只要重跑單筆，呼叫 `POST /jobs/lodging-enrichment/documents/{document_id}/retry`
 
-### 5. Notion sync API
-
-Swagger tag 為 `notion-sync`。
-
-前置條件：
-
-- `POST /jobs/notion-sync/setup` 一律需要 `NOTION_API_TOKEN`
-- 若是設定全域 default target，還需要以下兩者擇一：
-  - `NOTION_PARENT_PAGE_ID`，用來建立新的 database
-  - `NOTION_DATA_SOURCE_ID`，用來直接校正既有 data source schema
-- 若是設定特定旅次 target，可在 request body 直接提供 `source_type` + chat id + `trip_id`，再搭配 `parent_page_id` 或 `data_source_id`
-- `POST /jobs/notion-sync/run` 需要 `NOTION_API_TOKEN` 與可用的 default/scoped target
-
-| Method | Path | 說明 |
-| --- | --- | --- |
-| `POST` | `/jobs/notion-sync/setup` | 建立或校正全域或旅次專屬的 Notion database / data source schema。 |
-| `POST` | `/jobs/notion-sync/run` | 同步 pending / failed / 有更新的文件到 Notion，可指定旅次範圍。 |
-| `GET` | `/jobs/notion-sync/documents` | 列出 Notion sync 狀態，可用聊天室 scope 與 `trip_id` 過濾。 |
-| `POST` | `/jobs/notion-sync/documents/{document_id}/retry` | 單筆文件重跑同步。 |
-
-`POST /jobs/notion-sync/setup` request body 可選填：
-
-```json
-{
-  "title": "Trip Lodgings"
-}
-```
-
-若要設定某個旅次專屬 target，可以改成：
-
-```json
-{
-  "title": "Tokyo 2026 Lodgings",
-  "source_type": "group",
-  "group_id": "Cgroup123",
-  "trip_id": "trip-current",
-  "trip_title": "東京 2026",
-  "parent_page_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-}
-```
-
-或綁定既有 data source：
-
-```json
-{
-  "source_type": "room",
-  "room_id": "Rroom123",
-  "trip_id": "trip-current",
-  "data_source_id": "ffffffff-1111-2222-3333-444444444444"
-}
-```
-
-setup 成功後會回傳：
-
-- `database_id`
-- `data_source_id`
-- `database_url`
-- `database_public_url`
-- `target_source`
-- `source_type` / `group_id` / `room_id` / `user_id`
-- `trip_id` / `trip_title`
-
-如果回傳的是全域 default target，建議把 `database_id`、`data_source_id` 視需要回填到 `.env`。旅次專屬 target 會存進 `NOTION_TARGET_COLLECTION`，不需要再寫回 `.env`。
-
-`POST /jobs/notion-sync/run` request body：
-
-```json
-{
-  "limit": 20,
-  "force": false
-}
-```
-
-若要只跑某個旅次，可以加上 source scope 與 `trip_id`：
-
-```json
-{
-  "limit": 20,
-  "force": true,
-  "source_type": "group",
-  "group_id": "Cgroup123",
-  "trip_id": "trip-current",
-  "trip_title": "東京 2026"
-}
-```
-
-`force` 行為：
-
-- `false`：只同步 pending、failed、或在上次同步後又被 capture / enrichment 更新的文件。
-- `true`：忽略同步狀態，重跑所有文件；若 `data_source_id` 已存在，也會先校正 schema。
-
-`GET /jobs/notion-sync/documents` 除了 `limit` 與 `status`，也可帶：
-
-- `source_type=group&group_id=...`
-- `source_type=room&room_id=...`
-- `source_type=user&user_id=...`
-- `trip_id=...`
-
-### Notion data source 欄位
-
-setup 後會收斂成以下 8 個欄位：
-
-- `名稱`
-- `平台`
-- `房源URL`
-- `Google 地圖 URL`
-- `設施`
-- `決策狀態`
-- `最後更新時間`
-- `ID`
-
-如果已經有舊版 schema，再呼叫一次 `POST /jobs/notion-sync/setup` 也會更新成這組欄位。
-
 ## 直接執行背景 job
 
 如果你要自己掛 cron 或排程器，可以直接跑 module。
@@ -577,20 +440,6 @@ python -m app.map_enrichment_job
 - 處理 `map_status = pending`
 - 重新嘗試可重試的 `map_status = failed`
 - 同步更新地圖、細節與價格欄位
-
-### Notion sync job
-
-```bash
-python -m app.notion_sync_job
-```
-
-這個 job 會依每筆文件的 source scope + trip scope 決定使用旅次專屬 target 或全域 default target；但若文件帶有 `trip_id`，就必須有對應的 trip-scoped target 才會同步。
-
-用途：
-
-- 同步 `notion_sync_status = pending`
-- 同步先前失敗文件
-- 同步在前次成功同步後又被 capture / enrichment 更新過的文件
 
 ## 測試
 
@@ -762,18 +611,6 @@ https://<your-domain>/webhooks/line
 
 `decision_status` 預設為 `candidate`，可被使用者改成 `booked` 或 `dismissed`。這是旅次討論中的主觀決策，不代表來源平台的供應狀態；來源平台狀態仍由 `is_sold_out` / `availability_source` 表示。
 
-### Notion sync 狀態
-
-- `notion_page_id`
-- `notion_page_url`
-- `notion_database_id`
-- `notion_data_source_id`
-- `notion_sync_status`
-- `notion_sync_error`
-- `notion_sync_retry_count`
-- `notion_last_attempt_at`
-- `notion_last_synced_at`
-
 ## 常用指令整理
 
 ```bash
@@ -795,17 +632,16 @@ conda activate nihon-line-bot
 
 # 手動跑 lodging enrichment
 python -m app.map_enrichment_job
-
-# 手動跑 Notion sync
-python -m app.notion_sync_job
 ```
+
+## Notion 退場
+
+Notion sync API、`app.notion_sync_job`、Notion target mapping 與相關環境變數已從支援面移除；`/jobs/notion-sync/*` 不再是有效路由。既有外部 Notion tables 不會被刪除，Mongo 文件中若仍有歷史 `notion_*` 欄位也會被保留，但新流程不會讀取、顯示或更新這些欄位。
 
 ## 開發備註
 
 - `start.sh` / `start.ps1` 會要求 `.env` 存在，否則不會啟動。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，系統仍可驗證 webhook 並寫入 MongoDB，但所有 reply message 都會失效。
-- Mongo 是旅次顯示層的 source of truth；Notion target 只會影響 export / sync，不影響 `/清單` 與 `/trips/{display_token}` 的主顯示流程。
-- `/摘要` 直接重用 `app.trip_display` 的 canonical payload，不會另外重查原始聊天紀錄或 Notion rich text。
-- 若你在 Notion 建好 data source 後想長期固定使用同一份全域資料，建議把 setup 回傳的 id 回填到 `.env`。
-- 若你要開始規劃新旅次，先在 LINE 用 `/建立旅次 <名稱>` 建立 active trip，再為該旅次呼叫 scoped `POST /jobs/notion-sync/setup`，或直接執行 `/全部重來` 讓系統建立 trip-scoped target。
+- Mongo 是旅次顯示層的 source of truth；`/清單`、`/trips/{display_token}` 與 `/摘要` 都直接讀 canonical lodging data。
+- `/摘要` 直接重用 `app.trip_display` 的 canonical payload，不會另外重查原始聊天紀錄。
 - 若要調整 AI 摘要 prompt、schema 或 fallback 行為，請優先看 [docs/lodging-decision-summary.md](docs/lodging-decision-summary.md) 與 `app/lodging_summary/`。

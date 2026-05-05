@@ -6,12 +6,6 @@ from urllib.parse import urlsplit, urlunsplit
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from app.notion_sync.service import (
-    DEFAULT_NOTION_DATABASE_TITLE,
-    NOTION_API_VERSION,
-)
-
-
 def _env_bool(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -67,7 +61,7 @@ class Settings(BaseModel):
     line_welcome_message: str = (
         "已加入群組。請先用 /建立旅次 <名稱> 建立目前旅次，再貼 Booking、Agoda 或 Airbnb 的住宿連結。"
     )
-    reply_capture_template: str = "已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。"
+    reply_capture_template: str = "已收到 {count} 筆住宿連結，會整理到目前旅次。"
     reply_duplicate_link_template: str = "你是不是在找這個\n{url}"
     supported_domains: tuple[str, ...] = Field(
         default=("booking.com", "agoda.com", "airbnb.com", "airbnb.com.tw")
@@ -75,17 +69,6 @@ class Settings(BaseModel):
     map_enrichment_batch_size: int = 20
     map_enrichment_request_timeout: float = 10.0
     map_enrichment_max_retry_count: int = 3
-    notion_api_token: str = ""
-    notion_parent_page_id: str = ""
-    notion_database_id: str = ""
-    notion_data_source_id: str = ""
-    notion_database_title: str = DEFAULT_NOTION_DATABASE_TITLE
-    notion_database_url: str = ""
-    notion_public_database_url: str = ""
-    notion_target_collection: str = "notion_targets"
-    notion_api_version: str = NOTION_API_VERSION
-    notion_request_timeout: float = 10.0
-    notion_sync_batch_size: int = 20
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     gemini_request_timeout: float = 15.0
@@ -177,7 +160,7 @@ class Settings(BaseModel):
             ),
             reply_capture_template=os.getenv(
                 "REPLY_CAPTURE_TEMPLATE",
-                "已收到 {count} 筆住宿連結，會自動整理並同步到 Notion。",
+                "已收到 {count} 筆住宿連結，會整理到目前旅次。",
             ),
             reply_duplicate_link_template=os.getenv(
                 "REPLY_DUPLICATE_LINK_TEMPLATE",
@@ -196,25 +179,6 @@ class Settings(BaseModel):
             map_enrichment_max_retry_count=int(
                 os.getenv("MAP_ENRICHMENT_MAX_RETRY_COUNT", "3")
             ),
-            notion_api_token=os.getenv("NOTION_API_TOKEN", ""),
-            notion_parent_page_id=os.getenv("NOTION_PARENT_PAGE_ID", ""),
-            notion_database_id=os.getenv("NOTION_DATABASE_ID", ""),
-            notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
-            notion_database_title=os.getenv(
-                "NOTION_DATABASE_TITLE", DEFAULT_NOTION_DATABASE_TITLE
-            ),
-            notion_database_url=os.getenv("NOTION_DATABASE_URL", ""),
-            notion_public_database_url=os.getenv(
-                "NOTION_PUBLIC_DATABASE_URL", ""
-            ),
-            notion_target_collection=os.getenv(
-                "NOTION_TARGET_COLLECTION", "notion_targets"
-            ),
-            notion_api_version=os.getenv("NOTION_API_VERSION", NOTION_API_VERSION),
-            notion_request_timeout=float(
-                os.getenv("NOTION_REQUEST_TIMEOUT", "10.0")
-            ),
-            notion_sync_batch_size=int(os.getenv("NOTION_SYNC_BATCH_SIZE", "20")),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             gemini_request_timeout=float(
