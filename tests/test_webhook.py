@@ -1458,6 +1458,43 @@ def _normalize_trip_title(title: str) -> str:
     return normalized
 
 
+def test_line_webhook_accepts_common_console_paths() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    app = create_app(
+        settings=settings,
+        collector=InMemoryCapturedLinkRepository(),
+        line_client=fake_line_client,
+    )
+    client = TestClient(app)
+
+    for webhook_path in ("/webhooks/line", "/callback", "/webhook"):
+        payload = _build_payload("/ping")
+        body = json.dumps(payload).encode("utf-8")
+        signature = generate_signature(settings.line_channel_secret, body)
+
+        response = client.post(
+            webhook_path,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Line-Signature": signature,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "captured": 0}
+
+    assert fake_line_client.calls == [
+        ("reply-token", "pong"),
+        ("reply-token", "pong"),
+        ("reply-token", "pong"),
+    ]
+
+
 def test_line_webhook_captures_links_and_replies() -> None:
     settings = Settings(
         line_channel_secret="super-secret",

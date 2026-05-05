@@ -89,6 +89,8 @@ def _get_map_enrichment_service(
     )
 
 
+@router.post("/callback", response_model=LineWebhookResponse, include_in_schema=False)
+@router.post("/webhook", response_model=LineWebhookResponse, include_in_schema=False)
 @router.post("/webhooks/line", response_model=LineWebhookResponse)
 async def line_webhook(
     request: Request,
