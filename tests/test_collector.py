@@ -312,7 +312,6 @@ def test_mongo_captured_link_repository_updates_decision_status_with_scope() -> 
     assert updated.decision_status == "booked"
     assert updated.decision_updated_at is not None
     assert updated.decision_updated_by_user_id == "Uuser123"
-    assert updated.notion_sync_status == "pending"
 
 
 def test_mongo_captured_link_repository_rejects_decision_update_outside_scope() -> None:

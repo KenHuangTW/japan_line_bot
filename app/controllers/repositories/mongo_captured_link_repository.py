@@ -120,7 +120,6 @@ class MongoCapturedLinkRepository:
                     "decision_status": decision_status,
                     "decision_updated_at": now,
                     "decision_updated_by_user_id": updated_by_user_id,
-                    "notion_sync_status": "pending",
                 }
             },
         )

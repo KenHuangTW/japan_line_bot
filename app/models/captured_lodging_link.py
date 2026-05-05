@@ -6,7 +6,6 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 MapStatus = Literal["pending", "resolved", "partial", "failed"]
-SyncStatus = Literal["pending", "synced", "failed"]
 LodgingDecisionStatus = Literal["candidate", "booked", "dismissed"]
 LODGING_DECISION_STATUS_VALUES = {"candidate", "booked", "dismissed"}
 
@@ -268,42 +267,6 @@ class CapturedLodgingLink(BaseModel):
     event_mode: str | None = Field(
         default=None,
         description="LINE webhook mode，例如 active。",
-    )
-    notion_page_id: str | None = Field(
-        default=None,
-        description="同步到 Notion 後對應的 page id。",
-    )
-    notion_page_url: str | None = Field(
-        default=None,
-        description="同步到 Notion 後對應的 page URL。",
-    )
-    notion_database_id: str | None = Field(
-        default=None,
-        description="同步到 Notion 後對應的 database id。",
-    )
-    notion_data_source_id: str | None = Field(
-        default=None,
-        description="同步到 Notion 後對應的 data source id。",
-    )
-    notion_sync_status: SyncStatus = Field(
-        default="pending",
-        description="同步到 Notion 的狀態。",
-    )
-    notion_sync_error: str | None = Field(
-        default=None,
-        description="同步到 Notion 失敗時的錯誤摘要。",
-    )
-    notion_sync_retry_count: int = Field(
-        default=0,
-        description="同步到 Notion 已重試次數。",
-    )
-    notion_last_attempt_at: datetime | None = Field(
-        default=None,
-        description="最後一次嘗試同步到 Notion 的 UTC 時間。",
-    )
-    notion_last_synced_at: datetime | None = Field(
-        default=None,
-        description="最後一次成功同步到 Notion 的 UTC 時間。",
     )
     decision_status: LodgingDecisionStatus = Field(
         default="candidate",

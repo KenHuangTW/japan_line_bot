@@ -47,7 +47,6 @@ class TripDisplayLodging:
     amenities: tuple[str, ...] = ()
     google_maps_url: str | None = None
     google_maps_search_url: str | None = None
-    notion_page_url: str | None = None
     decision_status: LodgingDecisionStatus = "candidate"
     decision_updated_at: datetime | None = None
     decision_updated_by_user_id: str | None = None
@@ -114,7 +113,6 @@ class TripDisplaySurface:
     candidate_count: int = 0
     booked_count: int = 0
     dismissed_count: int = 0
-    notion_export_url: str | None = None
     generated_at: datetime | None = None
     platform_options: tuple[str, ...] = ()
 
@@ -145,7 +143,6 @@ class TripDisplaySurface:
                 "candidate_count": self.candidate_count,
                 "booked_count": self.booked_count,
                 "dismissed_count": self.dismissed_count,
-                "notion_export_url": self.notion_export_url,
             },
             "lodgings": [
                 {
@@ -165,7 +162,6 @@ class TripDisplaySurface:
                     "decision_status": lodging.decision_status,
                     "amenities": list(lodging.amenities),
                     "maps_url": lodging.maps_url,
-                    "notion_page_url": lodging.notion_page_url,
                     "captured_at": (
                         lodging.captured_at.isoformat()
                         if lodging.captured_at is not None

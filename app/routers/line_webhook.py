@@ -18,7 +18,6 @@ from app.controllers.validators.line_webhook import (
 from app.lodging_summary import DecisionSummaryService
 from app.lodging_links import LodgingLinkService
 from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
-from app.notion_sync import NotionTargetManager, NotionSyncRepository
 from app.schemas.line_webhook import LineWebhookResponse
 from app.trip_display import TripDisplayRepository
 
@@ -66,14 +65,6 @@ def _get_decision_summary_service(
     )
 
 
-def _get_notion_sync_repository(request: Request) -> NotionSyncRepository | None:
-    return cast(NotionSyncRepository | None, request.app.state.notion_sync_repository)
-
-
-def _get_notion_target_manager(request: Request) -> NotionTargetManager:
-    return cast(NotionTargetManager, request.app.state.notion_target_manager)
-
-
 def _get_map_enrichment_repository(
     request: Request,
 ) -> MapEnrichmentRepository | None:
@@ -117,8 +108,6 @@ async def line_webhook(
         trip_repository=_get_trip_repository(request),
         trip_display_repository=_get_trip_display_repository(request),
         decision_summary_service=_get_decision_summary_service(request),
-        notion_sync_repository=_get_notion_sync_repository(request),
-        notion_target_manager=_get_notion_target_manager(request),
         map_enrichment_repository=_get_map_enrichment_repository(request),
         map_enrichment_service=_get_map_enrichment_service(request),
         trip_detail_url_builder=lambda display_token: str(

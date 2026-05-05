@@ -4,8 +4,6 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from app.models import LineTrip
-from app.notion_sync.models import NotionSyncSourceScope
-from app.notion_sync.targets import NotionTargetConfig
 from app.trip_display import (
     MongoTripDisplayRepository,
     TripDisplayFilters,
@@ -44,26 +42,6 @@ class FakeCollection:
         )
 
 
-class InMemoryNotionTargetRepository:
-    def __init__(self) -> None:
-        self.targets: dict[tuple[str, str, str | None], NotionTargetConfig] = {}
-
-    def find_by_source_scope(
-        self,
-        source_scope: NotionSyncSourceScope,
-    ) -> NotionTargetConfig | None:
-        return self.targets.get(
-            (source_scope.source_type, source_scope.trip_id or "", source_scope.group_id)
-        )
-
-    def save(self, target: NotionTargetConfig) -> None:
-        source_scope = target.source_scope
-        assert source_scope is not None
-        self.targets[
-            (source_scope.source_type, source_scope.trip_id or "", source_scope.group_id)
-        ] = target
-
-
 def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
     trip = LineTrip(
         trip_id="trip-1",
@@ -71,20 +49,6 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
         title="東京 2026",
         source_type="group",
         group_id="Cgroup123",
-    )
-    target_repository = InMemoryNotionTargetRepository()
-    target_repository.save(
-        NotionTargetConfig.from_source_scope(
-            NotionSyncSourceScope(
-                source_type="group",
-                group_id="Cgroup123",
-                trip_id="trip-1",
-                trip_title="東京 2026",
-            ),
-            database_id="db-current",
-            data_source_id="ds-current",
-            public_database_url="https://www.notion.so/public-trip-lodgings",
-        )
     )
     repository = MongoTripDisplayRepository(
         FakeCollection(
@@ -101,6 +65,8 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
                     "price_currency": "TWD",
                     "is_sold_out": False,
                     "captured_at": datetime(2026, 4, 2, tzinfo=timezone.utc),
+                    "notion_page_url": "https://www.notion.so/legacy-doc-1",
+                    "notion_last_synced_at": datetime(2026, 4, 5, tzinfo=timezone.utc),
                     "source_type": "group",
                     "group_id": "Cgroup123",
                     "trip_id": "trip-1",
@@ -119,7 +85,6 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
                 },
             ]
         ),
-        target_repository,
     )
 
     surface = repository.build_trip_display(
@@ -135,16 +100,18 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
     assert surface.candidate_count == 2
     assert surface.booked_count == 0
     assert surface.dismissed_count == 0
-    assert surface.notion_export_url == "https://www.notion.so/public-trip-lodgings"
     assert [lodging.display_name for lodging in surface.lodgings] == [
         "Foo Hotel",
         "Bar Hotel",
     ]
+    assert surface.generated_at == datetime(2026, 4, 2, tzinfo=timezone.utc)
     summary_payload = surface.to_summary_payload()
     assert summary_payload["summary"]["total_lodgings"] == 2
     assert summary_payload["summary"]["candidate_count"] == 2
+    assert "notion_export_url" not in summary_payload["summary"]
     assert summary_payload["lodgings"][0]["display_name"] == "Foo Hotel"
     assert summary_payload["lodgings"][0]["decision_status"] == "candidate"
+    assert "notion_page_url" not in summary_payload["lodgings"][0]
     assert summary_payload["lodgings"][0]["hero_image_url"] == "https://cdn.example.com/foo.jpg"
     assert (
         summary_payload["lodgings"][0]["line_hero_image_url"]
@@ -152,7 +119,7 @@ def test_mongo_trip_display_repository_builds_canonical_surface() -> None:
     )
 
 
-def test_mongo_trip_display_repository_filters_without_notion_target() -> None:
+def test_mongo_trip_display_repository_filters_without_external_export() -> None:
     trip = LineTrip(
         trip_id="trip-2",
         display_token="trip-display-token-2",
@@ -196,7 +163,6 @@ def test_mongo_trip_display_repository_filters_without_notion_target() -> None:
         TripDisplayFilters(availability="unknown"),
     )
 
-    assert surface.notion_export_url is None
     assert surface.visible_count == 1
     assert surface.lodgings[0].display_name == "Foo Hotel"
     assert surface.platform_options == ("airbnb", "booking")
@@ -280,7 +246,6 @@ def test_trip_detail_html_renders_trip_log_rows_with_thumbnails_and_controls() -
                 property_name="Foo Hotel",
                 formatted_address="東京新宿區",
                 google_maps_url="https://maps.example.com/foo",
-                notion_page_url="https://notion.so/foo",
                 hero_image_url="https://cdn.example.com/foo-hero.webp",
                 line_hero_image_url="https://cdn.example.com/foo-line.jpg",
                 price_amount=3200,
@@ -346,7 +311,7 @@ def test_trip_detail_html_renders_trip_log_rows_with_thumbnails_and_controls() -
     assert "Booking.com" in html
     assert "東京新宿區" in html
     assert "https://maps.example.com/foo" in html
-    assert "https://notion.so/foo" in html
+    assert "notion" not in html.lower()
     assert "已訂這間" in html
     assert "不考慮這間" in html
     assert "?decision_status=booked" in html

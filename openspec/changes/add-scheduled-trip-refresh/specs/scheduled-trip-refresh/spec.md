@@ -12,15 +12,16 @@ The system SHALL provide a batch refresh job that targets active trips and skips
 - **THEN** the system does not refresh lodging records for that trip
 
 ### Requirement: Refresh work SHALL stay within each trip scope
-The system SHALL rerun lodging refresh and downstream sync per trip using that trip's lodging records only.
+The system SHALL rerun lodging refresh per trip using that trip's lodging records only.
 
 #### Scenario: Refresh reruns enrichment for one trip
 - **WHEN** the trip refresh job starts processing an active trip
 - **THEN** it reruns lodging enrichment only for records belonging to that trip
 
-#### Scenario: Refresh syncs updated trip records to Notion
-- **WHEN** an active trip refresh completes for a trip that has a configured Notion target
-- **THEN** the system syncs the refreshed records back to that trip's Notion data source
+#### Scenario: Refresh updates Mongo-backed trip records
+- **WHEN** an active trip refresh completes for a trip
+- **THEN** the refreshed lodging data is persisted to Mongo canonical records
+- **AND** the trip detail page can show the refreshed data without a downstream export sync
 
 ### Requirement: Refresh execution SHALL tolerate per-trip failures
 The system SHALL continue processing other trips when one trip fails during a scheduled refresh run.

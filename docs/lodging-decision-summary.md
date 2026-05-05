@@ -5,7 +5,7 @@
 ## 目的
 
 - `/摘要` 只處理目前 active trip。
-- 摘要輸入只來自 Mongo canonical lodging payload，不讀原始 LINE 對話，也不讀 Notion rich text。
+- 摘要輸入只來自 Mongo canonical lodging payload，不讀原始 LINE 對話。
 - Gemini 必須回傳結構化 JSON；程式端會先驗證 schema，再轉成 LINE 文字回覆。
 
 ## 啟用方式
