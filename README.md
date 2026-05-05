@@ -368,6 +368,8 @@ curl http://127.0.0.1:8000/healthz
 | Method | Path | 說明 |
 | --- | --- | --- |
 | `POST` | `/webhooks/line` | LINE Messaging API webhook endpoint。 |
+| `POST` | `/callback` | 相容 LINE 官方範例常見 webhook path。 |
+| `POST` | `/webhook` | 相容常見單數 webhook path。 |
 
 需求：
 
@@ -670,6 +672,7 @@ docker compose up --build
 https://<your-domain>/webhooks/line
 ```
 
+   若你已經在 LINE Developers Console 填成 `/callback` 或 `/webhook`，服務也會接受；但不要只填網域根目錄，否則 verify 會得到 `404 Not Found`。
 4. 啟用 webhook。
 5. 把 bot 邀進目標群組或聊天室。
 
