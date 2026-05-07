@@ -53,6 +53,12 @@ class Settings(BaseModel):
     mongo_database: str = "nihon_line_bot"
     mongo_collection: str = "captured_lodging_links"
     trip_collection: str = "line_trips"
+    line_message_snapshot_collection: str = "line_message_snapshots"
+    line_message_snapshot_retention_days: int = 30
+    itinerary_source_collection: str = "trip_itinerary_sources"
+    itinerary_draft_collection: str = "trip_itinerary_drafts"
+    itinerary_item_collection: str = "trip_itinerary_items"
+    itinerary_default_timezone: str = "Asia/Tokyo"
     line_channel_secret: str = ""
     line_channel_access_token: str = ""
     line_command_control_source_group_id: str = ""
@@ -145,6 +151,29 @@ class Settings(BaseModel):
                 "MONGO_COLLECTION", "captured_lodging_links"
             ),
             trip_collection=os.getenv("TRIP_COLLECTION", "line_trips"),
+            line_message_snapshot_collection=os.getenv(
+                "LINE_MESSAGE_SNAPSHOT_COLLECTION",
+                "line_message_snapshots",
+            ),
+            line_message_snapshot_retention_days=int(
+                os.getenv("LINE_MESSAGE_SNAPSHOT_RETENTION_DAYS", "30")
+            ),
+            itinerary_source_collection=os.getenv(
+                "ITINERARY_SOURCE_COLLECTION",
+                "trip_itinerary_sources",
+            ),
+            itinerary_draft_collection=os.getenv(
+                "ITINERARY_DRAFT_COLLECTION",
+                "trip_itinerary_drafts",
+            ),
+            itinerary_item_collection=os.getenv(
+                "ITINERARY_ITEM_COLLECTION",
+                "trip_itinerary_items",
+            ),
+            itinerary_default_timezone=os.getenv(
+                "ITINERARY_DEFAULT_TIMEZONE",
+                "Asia/Tokyo",
+            ),
             line_channel_secret=os.getenv("LINE_CHANNEL_SECRET", ""),
             line_channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
             line_command_control_source_group_id=os.getenv(

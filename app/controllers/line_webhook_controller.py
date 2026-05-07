@@ -8,8 +8,20 @@ from urllib.parse import parse_qs
 from app.config import Settings
 from app.controllers.integration.line_client import LineClient
 from app.controllers.repositories.captured_link_repository import CapturedLinkRepository
+from app.controllers.repositories.message_snapshot_repository import (
+    MessageSnapshotRepository,
+)
 from app.controllers.repositories.trip_repository import TripRepository
 from app.link_extractor import extract_lodging_links
+from app.itinerary import (
+    ItineraryDraftUnavailableError,
+    ItineraryImportError,
+    ItineraryImportService,
+    build_itinerary_apply_reply,
+    build_itinerary_discard_reply,
+    build_itinerary_draft_reply,
+    build_itinerary_list_reply,
+)
 from app.lodging_links import LodgingLinkService
 from app.lodging_links.common import build_lodging_lookup_keys
 from app.lodging_summary import (
@@ -31,6 +43,7 @@ from app.models import (
     LineTrip,
     LodgingDecisionStatus,
     LodgingLinkMatch,
+    build_line_message_snapshot,
 )
 from app.schemas.line_webhook import LineEventSource, LineWebhookRequest
 from app.source_scope import SourceScope, build_source_scope
@@ -50,6 +63,10 @@ TRIP_SWITCH_COMMAND = "/切換旅次"
 TRIP_CURRENT_COMMAND = "/目前旅次"
 TRIP_ARCHIVE_COMMAND = "/封存旅次"
 TRIP_LIST_COMMAND = "/清單"
+ITINERARY_IMPORT_COMMAND = "/整理行程"
+ITINERARY_APPLY_COMMAND = "/套用行程"
+ITINERARY_DISCARD_COMMAND = "/取消行程"
+ITINERARY_LIST_COMMAND = "/行程"
 SUMMARY_COMMAND = "/摘要"
 TRIP_REFRESH_COMMAND = "/整理"
 TRIP_FORCE_REFRESH_COMMAND = "/全部重來"
@@ -64,6 +81,15 @@ SUMMARY_FEATURE_UNAVAILABLE_MESSAGE = "AI 摘要尚未設定完成。"
 SUMMARY_EMPTY_TRIP_MESSAGE = "目前旅次還沒有住宿資料可摘要，請先貼住宿連結。"
 SUMMARY_FAILED_MESSAGE = "目前無法產生住宿摘要，請稍後再試。"
 LODGING_DECISION_FAILED_MESSAGE = "找不到這筆住宿，可能已不在目前旅次。"
+ITINERARY_FEATURE_UNAVAILABLE_MESSAGE = "行程整理功能尚未設定完成。"
+ITINERARY_IMPORT_USAGE_MESSAGE = (
+    "請在 /整理行程 後貼上行程內容，或回覆一則行程訊息並輸入 /整理行程。"
+)
+ITINERARY_QUOTED_MESSAGE_NOT_FOUND = (
+    "找不到被引用的行程內容。可能是這則訊息是在功能上線前送出，或已超過保存期限。"
+)
+ITINERARY_IMPORT_FAILED_MESSAGE = "目前無法整理行程，請稍後再試。"
+ITINERARY_NO_PENDING_DRAFT_MESSAGE = "目前沒有等待套用的行程草稿。"
 LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (HELP_COMMAND, "顯示目前支援的指令與說明"),
     (PING_COMMAND, "回覆 pong"),
@@ -72,6 +98,10 @@ LINE_COMMAND_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
     (TRIP_CURRENT_COMMAND, "查看目前啟用中的旅次"),
     (TRIP_ARCHIVE_COMMAND, "封存目前旅次並清空 active trip"),
     (TRIP_LIST_COMMAND, "回傳目前旅次的住宿 preview 與詳情頁連結"),
+    (ITINERARY_IMPORT_COMMAND, "整理整份行程文字，或回覆既有行程訊息後整理"),
+    (ITINERARY_APPLY_COMMAND, "套用最近一次行程草稿"),
+    (ITINERARY_DISCARD_COMMAND, "取消最近一次行程草稿"),
+    (ITINERARY_LIST_COMMAND, "查看目前旅次的正式行程"),
     (SUMMARY_COMMAND, "產生目前旅次的 AI 決策摘要"),
     (
         TRIP_REFRESH_COMMAND,
@@ -112,10 +142,14 @@ async def _handle_line_command(
     *,
     text: str,
     source: LineEventSource,
+    message_id: str | None,
+    quoted_message_id: str | None,
     reply_token: str | None,
     settings: Settings,
     line_client: LineClient,
     trip_repository: TripRepository | None,
+    message_snapshot_repository: MessageSnapshotRepository | None,
+    itinerary_import_service: ItineraryImportService | None,
     trip_display_repository: TripDisplayRepository | None,
     decision_summary_service: DecisionSummaryService | None,
     trip_detail_url_builder: Callable[[str], str] | None,
@@ -231,6 +265,103 @@ async def _handle_line_command(
                 reply_token=reply_token,
                 text=fallback_text,
             )
+        return True
+
+    if command == ITINERARY_IMPORT_COMMAND:
+        _, active_trip, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
+            source=source,
+            trip_repository=trip_repository,
+            action_label="整理行程",
+        )
+        text_to_reply = (
+            error_message
+            if error_message is not None
+            else await _run_itinerary_import_command(
+                settings=settings,
+                source=source,
+                message_id=message_id,
+                quoted_message_id=quoted_message_id,
+                argument=argument,
+                active_trip=active_trip,
+                message_snapshot_repository=message_snapshot_repository,
+                itinerary_import_service=itinerary_import_service,
+            )
+        )
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=text_to_reply,
+        )
+        return True
+
+    if command == ITINERARY_APPLY_COMMAND:
+        trip_scope, active_trip, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
+            source=source,
+            trip_repository=trip_repository,
+            action_label="套用行程",
+        )
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=(
+                error_message
+                if error_message is not None
+                else _run_itinerary_apply_command(
+                    active_trip=active_trip,
+                    source_scope=trip_scope,
+                    itinerary_import_service=itinerary_import_service,
+                )
+            ),
+        )
+        return True
+
+    if command == ITINERARY_DISCARD_COMMAND:
+        trip_scope, _, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
+            source=source,
+            trip_repository=trip_repository,
+            action_label="取消行程草稿",
+        )
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=(
+                error_message
+                if error_message is not None
+                else _run_itinerary_discard_command(
+                    source_scope=trip_scope,
+                    itinerary_import_service=itinerary_import_service,
+                )
+            ),
+        )
+        return True
+
+    if command == ITINERARY_LIST_COMMAND:
+        trip_scope, active_trip, error_message = _resolve_command_active_trip_scope(
+            settings=settings,
+            source=source,
+            trip_repository=trip_repository,
+            action_label="查看行程",
+        )
+        await _reply_if_possible(
+            settings=settings,
+            line_client=line_client,
+            reply_token=reply_token,
+            text=(
+                error_message
+                if error_message is not None
+                else _run_itinerary_list_command(
+                    active_trip=active_trip,
+                    source_scope=trip_scope,
+                    itinerary_import_service=itinerary_import_service,
+                )
+            ),
+        )
         return True
 
     if command == SUMMARY_COMMAND:
@@ -637,7 +768,8 @@ def _format_help_message() -> str:
         "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
         f"3. {TRIP_REFRESH_COMMAND} 整理目前旅次資料\n"
         f"4. {TRIP_LIST_COMMAND} 查看目前旅次清單\n"
-        f"5. {SUMMARY_COMMAND} 產生 AI 決策摘要\n"
+        f"5. {ITINERARY_IMPORT_COMMAND} 整理整份行程文字\n"
+        f"6. {SUMMARY_COMMAND} 產生 AI 決策摘要\n"
         "\n"
         "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
         "\n"
@@ -673,6 +805,146 @@ async def _run_decision_summary_command(
         return SUMMARY_FAILED_MESSAGE
 
     return build_line_lodging_decision_summary(result)
+
+
+async def _run_itinerary_import_command(
+    *,
+    settings: Settings,
+    source: LineEventSource,
+    message_id: str | None,
+    quoted_message_id: str | None,
+    argument: str | None,
+    active_trip: LineTrip | None,
+    message_snapshot_repository: MessageSnapshotRepository | None,
+    itinerary_import_service: ItineraryImportService | None,
+) -> str:
+    if active_trip is None:
+        return TRIP_REQUIRED_MESSAGE
+    if itinerary_import_service is None:
+        return ITINERARY_FEATURE_UNAVAILABLE_MESSAGE
+
+    target_source = _resolve_target_source(settings=settings, source=source)
+    trip_scope, error_message = _build_active_trip_source_scope(
+        active_trip=active_trip,
+        fallback_source=target_source,
+        action_label="整理行程",
+    )
+    if error_message is not None or trip_scope is None:
+        return error_message or TRIP_REQUIRED_MESSAGE
+
+    input_mode = "direct"
+    source_text = argument.strip() if argument else ""
+    if not source_text and quoted_message_id:
+        if message_snapshot_repository is None:
+            return ITINERARY_QUOTED_MESSAGE_NOT_FOUND
+        snapshot = message_snapshot_repository.find_text_by_message_id(
+            quoted_message_id,
+            source_type=target_source.type,
+            group_id=target_source.groupId,
+            room_id=target_source.roomId,
+            user_id=target_source.userId,
+        )
+        if snapshot is None:
+            return ITINERARY_QUOTED_MESSAGE_NOT_FOUND
+        source_text = snapshot.message_text
+        input_mode = "quoted"
+
+    if not source_text:
+        return ITINERARY_IMPORT_USAGE_MESSAGE
+
+    try:
+        result = await itinerary_import_service.create_draft(
+            trip=active_trip,
+            source_scope=trip_scope,
+            source_text=source_text,
+            input_mode=input_mode,
+            created_by_user_id=source.userId,
+            source_message_id=message_id,
+            quoted_message_id=quoted_message_id if input_mode == "quoted" else None,
+        )
+    except ItineraryImportError:
+        logger.exception("Failed to import itinerary.")
+        return ITINERARY_IMPORT_FAILED_MESSAGE
+    except Exception:
+        logger.exception("Unexpected itinerary import failure.")
+        return ITINERARY_IMPORT_FAILED_MESSAGE
+
+    return build_itinerary_draft_reply(result)
+
+
+def _run_itinerary_apply_command(
+    *,
+    active_trip: LineTrip | None,
+    source_scope: SourceScope | None,
+    itinerary_import_service: ItineraryImportService | None,
+) -> str:
+    if active_trip is None or source_scope is None:
+        return TRIP_REQUIRED_MESSAGE
+    if itinerary_import_service is None:
+        return ITINERARY_FEATURE_UNAVAILABLE_MESSAGE
+    try:
+        result = itinerary_import_service.apply_latest_draft(
+            trip=active_trip,
+            source_scope=source_scope,
+        )
+    except ItineraryDraftUnavailableError:
+        return ITINERARY_NO_PENDING_DRAFT_MESSAGE
+    except Exception:
+        logger.exception("Failed to apply itinerary draft.")
+        return "行程草稿套用失敗，請稍後再試。"
+    return build_itinerary_apply_reply(result)
+
+
+def _run_itinerary_discard_command(
+    *,
+    source_scope: SourceScope | None,
+    itinerary_import_service: ItineraryImportService | None,
+) -> str:
+    if source_scope is None:
+        return TRIP_REQUIRED_MESSAGE
+    if itinerary_import_service is None:
+        return ITINERARY_FEATURE_UNAVAILABLE_MESSAGE
+    try:
+        draft = itinerary_import_service.discard_latest_draft(source_scope)
+    except ItineraryDraftUnavailableError:
+        return ITINERARY_NO_PENDING_DRAFT_MESSAGE
+    except Exception:
+        logger.exception("Failed to discard itinerary draft.")
+        return "行程草稿取消失敗，請稍後再試。"
+    return build_itinerary_discard_reply(draft)
+
+
+def _run_itinerary_list_command(
+    *,
+    active_trip: LineTrip | None,
+    source_scope: SourceScope | None,
+    itinerary_import_service: ItineraryImportService | None,
+) -> str:
+    if active_trip is None or source_scope is None:
+        return TRIP_REQUIRED_MESSAGE
+    if itinerary_import_service is None:
+        return ITINERARY_FEATURE_UNAVAILABLE_MESSAGE
+    items = itinerary_import_service.list_confirmed_items(source_scope)
+    return build_itinerary_list_reply(trip_title=active_trip.title, items=items)
+
+
+def _build_active_trip_source_scope(
+    *,
+    active_trip: LineTrip,
+    fallback_source: LineEventSource,
+    action_label: str,
+) -> tuple[SourceScope | None, str | None]:
+    trip_scope = build_source_scope(
+        source_type=active_trip.source_type or fallback_source.type,
+        group_id=active_trip.group_id or fallback_source.groupId,
+        room_id=active_trip.room_id or fallback_source.roomId,
+        user_id=active_trip.user_id or fallback_source.userId,
+        trip_id=active_trip.trip_id,
+        trip_title=active_trip.title,
+    )
+    if trip_scope is None:
+        return None, f"無法辨識目前聊天室，暫時無法{action_label}。"
+    return trip_scope, None
 
 
 def _format_trip_refresh_summary(
@@ -849,6 +1121,8 @@ async def process_events(
     decision_summary_service: DecisionSummaryService | None = None,
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
+    message_snapshot_repository: MessageSnapshotRepository | None = None,
+    itinerary_import_service: ItineraryImportService | None = None,
     trip_detail_url_builder: Callable[[str], str] | None = None,
 ) -> int:
     captured_total = 0
@@ -882,13 +1156,22 @@ async def process_events(
             continue
 
         text = event.message.text
+        _store_text_message_snapshot(
+            event=event,
+            settings=settings,
+            repository=message_snapshot_repository,
+        )
         if await _handle_line_command(
             text=text,
             source=event.source,
+            message_id=event.message.id,
+            quoted_message_id=event.message.quotedMessageId,
             reply_token=reply_token,
             settings=settings,
             line_client=line_client,
             trip_repository=trip_repository,
+            message_snapshot_repository=message_snapshot_repository,
+            itinerary_import_service=itinerary_import_service,
             trip_display_repository=trip_display_repository,
             decision_summary_service=decision_summary_service,
             trip_detail_url_builder=trip_detail_url_builder,
@@ -1006,3 +1289,32 @@ async def process_events(
             )
 
     return captured_total
+
+
+def _store_text_message_snapshot(
+    *,
+    event: Any,
+    settings: Settings,
+    repository: MessageSnapshotRepository | None,
+) -> None:
+    if repository is None:
+        return
+    message_id = event.message.id
+    text = event.message.text
+    if not message_id or not text:
+        return
+
+    target_source = _resolve_target_source(settings=settings, source=event.source)
+    snapshot = build_line_message_snapshot(
+        message_id=message_id,
+        source_type=target_source.type,
+        group_id=target_source.groupId,
+        room_id=target_source.roomId,
+        user_id=target_source.userId,
+        sender_user_id=event.source.userId,
+        message_text=text,
+        quote_token=event.message.quoteToken,
+        event_timestamp_ms=event.timestamp,
+        retention_days=settings.line_message_snapshot_retention_days,
+    )
+    repository.save(snapshot)

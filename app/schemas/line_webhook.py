@@ -18,6 +18,8 @@ class LineMessage(BaseModel):
     id: str | None = None
     type: str | None = None
     text: str = ""
+    quotedMessageId: str | None = None
+    quoteToken: str | None = None
 
 
 class LinePostback(BaseModel):

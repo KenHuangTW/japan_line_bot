@@ -10,6 +10,9 @@ from app.controllers.line_webhook_controller import process_events
 from app.controllers.repositories.captured_link_repository import (
     CapturedLinkRepository,
 )
+from app.controllers.repositories.message_snapshot_repository import (
+    MessageSnapshotRepository,
+)
 from app.controllers.repositories.trip_repository import TripRepository
 from app.controllers.validators.line_webhook import (
     ensure_line_webhook_request_is_valid,
@@ -17,6 +20,7 @@ from app.controllers.validators.line_webhook import (
 )
 from app.lodging_summary import DecisionSummaryService
 from app.lodging_links import LodgingLinkService
+from app.itinerary import ItineraryImportService
 from app.map_enrichment import LodgingMapEnrichmentService, MapEnrichmentRepository
 from app.schemas.line_webhook import LineWebhookResponse
 from app.trip_display import TripDisplayRepository
@@ -43,6 +47,24 @@ def _get_line_client(request: Request) -> LineClient:
 
 def _get_trip_repository(request: Request) -> TripRepository | None:
     return cast(TripRepository | None, request.app.state.trip_repository)
+
+
+def _get_message_snapshot_repository(
+    request: Request,
+) -> MessageSnapshotRepository | None:
+    return cast(
+        MessageSnapshotRepository | None,
+        request.app.state.message_snapshot_repository,
+    )
+
+
+def _get_itinerary_import_service(
+    request: Request,
+) -> ItineraryImportService | None:
+    return cast(
+        ItineraryImportService | None,
+        request.app.state.itinerary_import_service,
+    )
 
 
 def _get_trip_display_repository(request: Request) -> TripDisplayRepository | None:
@@ -110,6 +132,8 @@ async def line_webhook(
         decision_summary_service=_get_decision_summary_service(request),
         map_enrichment_repository=_get_map_enrichment_repository(request),
         map_enrichment_service=_get_map_enrichment_service(request),
+        message_snapshot_repository=_get_message_snapshot_repository(request),
+        itinerary_import_service=_get_itinerary_import_service(request),
         trip_detail_url_builder=lambda display_token: str(
             request.url_for("trip_detail", display_token=display_token)
         ),
