@@ -12,6 +12,7 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 6. 透過 enrichment job 補上名稱、地址、座標、設備、價格與 Google Maps 連結。
 7. `/清單` 會直接從 Mongo canonical data 回傳旅次 preview，並附上只讀旅次頁連結。
 8. `/摘要` 會直接根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。
+9. `/整理行程` 可把整份 Markdown 行程整理成 Mongo-backed 行程草稿，確認後寫入正式行程。
 
 ## 功能重點
 
@@ -23,9 +24,10 @@ Nihon LINE Bot 是一個用 FastAPI 實作的 LINE webhook 服務，目標是讓
 - 提供 mobile-friendly 的只讀旅次頁，直接從 Mongo 顯示候選住宿與住宿縮圖，支援基本篩選與排序。
 - `/清單` 會回 LINE Flex carousel，每筆候選住宿一張卡片；若 Mongo 已存好 `line_hero_image_url`，會直接顯示 hero image，再引導到房源頁與旅次詳情頁。
 - `/摘要` 會以 Gemini structured output 回傳目前旅次的候選住宿、優缺點、缺漏資訊與討論重點。
+- `/整理行程` 可直接貼整份行程，或回覆過去的行程訊息後整理；AI / parser 會先產生草稿，使用 `/套用行程` 才寫入正式行程。
 - 可選擇在成功收錄或發現重複連結時直接回覆 LINE。
 - 提供住宿 enrichment API，方便手動觸發或串接排程。
-- 提供 `/help`、`/ping`、`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/摘要`、`/整理`、`/全部重來` 十個 LINE 指令。
+- 提供 `/help`、`/ping`、`/建立旅次`、`/切換旅次`、`/目前旅次`、`/封存旅次`、`/清單`、`/整理行程`、`/套用行程`、`/取消行程`、`/行程`、`/摘要`、`/整理`、`/全部重來` 等 LINE 指令。
 - 提供 shell / PowerShell 腳本協助啟動 MongoDB、服務與測試。
 
 旅次顯示層與 AI 摘要的操作說明，請參考 [docs/trip-display-surface.md](docs/trip-display-surface.md) 與 [docs/lodging-decision-summary.md](docs/lodging-decision-summary.md)。
@@ -45,6 +47,8 @@ LINE message
   -> /清單 LINE preview
   -> /trips/{display_token} read-only trip detail surface
   -> /摘要 Gemini decision summary
+  -> /整理行程 itinerary draft
+  -> /套用行程 MongoDB trip_itinerary_items
   -> lodging enrichment job
 ```
 
@@ -53,6 +57,7 @@ LINE message
 ```text
 app/
   controllers/         Webhook / job controller 與 repository adapter
+  itinerary/           行程 Markdown parser、Gemini normalization、draft service 與 LINE rendering
   lodging_summary/     Gemini client、AI 摘要 service 與 LINE rendering
   lodging_links/       Booking / Agoda 網址分類與短網址解析流程
   map_enrichment/      住宿頁地圖、地址、價格、設備資料解析
@@ -238,6 +243,12 @@ curl http://127.0.0.1:8000/healthz
 | `MONGO_DATABASE` | `nihon_line_bot` | 資料庫名稱。 |
 | `MONGO_COLLECTION` | `captured_lodging_links` | 住宿連結 collection。 |
 | `TRIP_COLLECTION` | `line_trips` | 旅次狀態與 active trip collection。 |
+| `LINE_MESSAGE_SNAPSHOT_COLLECTION` | `line_message_snapshots` | LINE text snapshot collection，用於 reply `/整理行程` 時取回被引用訊息內容。 |
+| `LINE_MESSAGE_SNAPSHOT_RETENTION_DAYS` | `30` | LINE text snapshot 保留天數；過期 snapshot 不會被 quoted-message 匯入使用。 |
+| `ITINERARY_SOURCE_COLLECTION` | `trip_itinerary_sources` | 行程匯入原文 collection。 |
+| `ITINERARY_DRAFT_COLLECTION` | `trip_itinerary_drafts` | 行程草稿與 diff collection。 |
+| `ITINERARY_ITEM_COLLECTION` | `trip_itinerary_items` | 已套用的正式行程 collection。 |
+| `ITINERARY_DEFAULT_TIMEZONE` | `Asia/Tokyo` | 匯入行程預設時區。 |
 
 ### LINE webhook 與回覆
 
@@ -319,6 +330,11 @@ curl http://127.0.0.1:8000/healthz
 | `/目前旅次` | 查看目前啟用中的旅次名稱與旅次 ID。 |
 | `/封存旅次` | 封存目前旅次，並清空 active trip。 |
 | `/清單` | 回傳目前旅次的 LINE Flex carousel；每張卡片可點圖文開房源，並提供 `已訂這間` / `改回候選` 與旅次詳情入口。 |
+| `/整理行程 <行程內容>` | 將整份 Markdown / 文字行程整理成待確認草稿。 |
+| 回覆行程訊息後 `/整理行程` | 使用被引用訊息的內容整理行程；被引用訊息必須已被 bot snapshot 保存。 |
+| `/套用行程` | 套用最近一次待確認行程草稿，寫入正式行程。 |
+| `/取消行程` | 丟棄最近一次待確認行程草稿，不修改正式行程。 |
+| `/行程` | 顯示目前旅次已套用的正式行程。 |
 | `/摘要` | 根據目前旅次的 canonical lodging payload 呼叫 Gemini，回傳候選住宿、優缺點、待補資訊與討論重點。 |
 | `/整理` | 只針對目前旅次範圍，整理尚未補齊的住宿、地圖、細節與價格資料。 |
 | `/全部重來` | 只針對目前旅次範圍，忽略既有整理狀態，重新整理所有住宿、地圖、細節與價格資料。 |
@@ -326,7 +342,8 @@ curl http://127.0.0.1:8000/healthz
 注意：
 
 - 貼住宿連結前必須先有 active trip，否則 bot 只會回覆旅次建立 / 切換提示，不會收錄資料。
-- `/清單`、`/摘要`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
+- `/清單`、`/整理行程`、`/套用行程`、`/取消行程`、`/行程`、`/摘要`、`/整理`、`/全部重來` 都必須能辨識目前 source scope，且該聊天室要先有 active trip。
+- LINE quoted-message webhook 只提供被引用訊息 id；若要回覆舊訊息後 `/整理行程`，該訊息必須是在 snapshot 功能上線後送出且尚未超過保留期限。
 - `已訂這間`、`改回候選`、`不考慮這間` 都是使用者決策狀態；這和來源網站解析出的 `可訂`、`已售完`、`待確認` 是兩組不同資訊。
 - `GEMINI_API_KEY` 未設定時，`/摘要` 會回覆 `AI 摘要尚未設定完成。`。
 - `LINE_CHANNEL_ACCESS_TOKEN` 留空時，指令仍會執行，但 bot 無法回覆訊息。

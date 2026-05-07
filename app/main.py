@@ -6,6 +6,10 @@ from fastapi import FastAPI
 
 from app.collector import Collector, create_collector
 from app.config import Settings
+from app.itinerary import (
+    GeminiItineraryProvider,
+    ItineraryImportService,
+)
 from app.line_client import HttpLineClient, LineClient, NoopLineClient
 from app.lodging_summary import (
     DecisionSummaryService,
@@ -21,7 +25,14 @@ from app.map_enrichment import (
     MongoMapEnrichmentRepository,
 )
 from app.trip_display import MongoTripDisplayRepository, TripDisplayRepository
-from app.controllers.repositories import MongoTripRepository, TripRepository
+from app.controllers.repositories import (
+    ItineraryRepository,
+    MessageSnapshotRepository,
+    MongoItineraryRepository,
+    MongoMessageSnapshotRepository,
+    MongoTripRepository,
+    TripRepository,
+)
 from app.routers import (
     health_router,
     line_webhook_router,
@@ -38,6 +49,9 @@ def create_app(
     map_enrichment_repository: MapEnrichmentRepository | None = None,
     map_enrichment_service: LodgingMapEnrichmentService | None = None,
     trip_repository: TripRepository | None = None,
+    message_snapshot_repository: MessageSnapshotRepository | None = None,
+    itinerary_repository: ItineraryRepository | None = None,
+    itinerary_import_service: ItineraryImportService | None = None,
     trip_display_repository: TripDisplayRepository | None = None,
     decision_summary_service: DecisionSummaryService | None = None,
 ) -> FastAPI:
@@ -82,6 +96,52 @@ def create_app(
         )
     else:
         active_trip_repository = None
+    if message_snapshot_repository is not None:
+        active_message_snapshot_repository = message_snapshot_repository
+    elif hasattr(active_collector, "collection") and hasattr(
+        active_collector.collection,
+        "database",
+    ):
+        active_message_snapshot_repository = MongoMessageSnapshotRepository(
+            active_collector.collection.database[
+                active_settings.line_message_snapshot_collection
+            ]
+        )
+    else:
+        active_message_snapshot_repository = None
+    if itinerary_repository is not None:
+        active_itinerary_repository = itinerary_repository
+    elif hasattr(active_collector, "collection") and hasattr(
+        active_collector.collection,
+        "database",
+    ):
+        database = active_collector.collection.database
+        active_itinerary_repository = MongoItineraryRepository(
+            source_collection=database[active_settings.itinerary_source_collection],
+            draft_collection=database[active_settings.itinerary_draft_collection],
+            item_collection=database[active_settings.itinerary_item_collection],
+        )
+    else:
+        active_itinerary_repository = None
+    if itinerary_import_service is not None:
+        active_itinerary_import_service = itinerary_import_service
+    elif active_itinerary_repository is not None:
+        provider = (
+            GeminiItineraryProvider(
+                active_settings.gemini_api_key,
+                model=active_settings.gemini_model,
+                timeout=active_settings.gemini_request_timeout,
+            )
+            if active_settings.is_gemini_configured
+            else None
+        )
+        active_itinerary_import_service = ItineraryImportService(
+            active_itinerary_repository,
+            provider,
+            timezone_name=active_settings.itinerary_default_timezone,
+        )
+    else:
+        active_itinerary_import_service = None
     if trip_display_repository is not None:
         active_trip_display_repository = trip_display_repository
     elif hasattr(active_collector, "collection"):
@@ -128,6 +188,9 @@ def create_app(
     app.state.map_enrichment_repository = active_map_enrichment_repository
     app.state.map_enrichment_service = active_map_enrichment_service
     app.state.trip_repository = active_trip_repository
+    app.state.message_snapshot_repository = active_message_snapshot_repository
+    app.state.itinerary_repository = active_itinerary_repository
+    app.state.itinerary_import_service = active_itinerary_import_service
     app.state.trip_display_repository = active_trip_display_repository
     app.state.decision_summary_service = active_decision_summary_service
 

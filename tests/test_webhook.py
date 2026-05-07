@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.itinerary import ItineraryImportService
 from app.lodging_summary import (
     LodgingDecisionSummaryEmptyTripError,
     LodgingDecisionSummaryInvalidResponseError,
@@ -20,7 +21,14 @@ from app.lodging_links.service import LodgingLinkService
 from app.line_security import generate_signature
 from app.main import create_app as build_app
 from app.map_enrichment.models import EnrichedLodgingMap, MapEnrichmentCandidate
-from app.models import CapturedLodgingLink, LineTrip
+from app.models import (
+    CapturedLodgingLink,
+    ItineraryDraft,
+    ItineraryItem,
+    ItinerarySource,
+    LineMessageSnapshot,
+    LineTrip,
+)
 from app.schemas.lodging_summary import (
     LodgingDecisionCandidate,
     LodgingDecisionSummaryLodging,
@@ -279,6 +287,89 @@ class InMemoryTripRepository:
                 trip.is_active = False
                 trip.archived_at = datetime.now(timezone.utc)
                 return trip.model_copy()
+        return None
+
+
+class InMemoryMessageSnapshotRepository:
+    def __init__(self, snapshots: Sequence[LineMessageSnapshot] | None = None) -> None:
+        self.snapshots = list(snapshots or [])
+
+    def save(self, snapshot: LineMessageSnapshot) -> None:
+        self.snapshots.append(snapshot)
+
+    def find_text_by_message_id(
+        self,
+        message_id: str,
+        *,
+        source_type: str,
+        group_id: str | None = None,
+        room_id: str | None = None,
+        user_id: str | None = None,
+    ) -> LineMessageSnapshot | None:
+        for snapshot in reversed(self.snapshots):
+            if snapshot.message_id != message_id:
+                continue
+            if snapshot.source_type != source_type:
+                continue
+            if source_type == "group" and snapshot.group_id != group_id:
+                continue
+            if source_type == "room" and snapshot.room_id != room_id:
+                continue
+            if source_type == "user" and snapshot.user_id != user_id:
+                continue
+            return snapshot
+        return None
+
+
+class InMemoryItineraryRepository:
+    def __init__(self) -> None:
+        self.sources: list[ItinerarySource] = []
+        self.drafts: list[ItineraryDraft] = []
+        self.items: list[ItineraryItem] = []
+
+    def create_source(self, source: ItinerarySource) -> ItinerarySource:
+        self.sources.append(source)
+        return source
+
+    def create_draft(self, draft: ItineraryDraft) -> ItineraryDraft:
+        self.drafts.append(draft)
+        return draft
+
+    def get_latest_pending_draft(self, source_scope: SourceScope):
+        for draft in reversed(self.drafts):
+            if draft.status == "pending" and _matches_itinerary_scope(draft, source_scope):
+                return draft
+        return None
+
+    def mark_draft_applied(self, draft_id: str) -> None:
+        for index, draft in enumerate(self.drafts):
+            if draft.draft_id == draft_id:
+                self.drafts[index] = draft.model_copy(update={"status": "applied"})
+
+    def mark_draft_discarded(self, draft_id: str) -> None:
+        for index, draft in enumerate(self.drafts):
+            if draft.draft_id == draft_id:
+                self.drafts[index] = draft.model_copy(update={"status": "discarded"})
+
+    def list_items(self, source_scope: SourceScope):
+        return [
+            item for item in self.items if _matches_itinerary_scope(item, source_scope)
+        ]
+
+    def upsert_item(self, item: ItineraryItem) -> ItineraryItem:
+        for index, current in enumerate(self.items):
+            if current.item_id == item.item_id:
+                self.items[index] = item
+                return item
+        self.items.append(item)
+        return item
+
+    def mark_item_cancelled(self, item_id: str, source_scope: SourceScope):
+        for index, item in enumerate(self.items):
+            if item.item_id == item_id and _matches_itinerary_scope(item, source_scope):
+                updated = item.model_copy(update={"status": "cancelled"})
+                self.items[index] = updated
+                return updated
         return None
 
 
@@ -663,6 +754,9 @@ class SharedMapEnrichmentRepository:
 def _build_payload(
     message_text: str,
     *,
+    message_id: str = "325708",
+    quoted_message_id: str | None = None,
+    quote_token: str | None = None,
     source_type: str = "group",
     group_id: str | None = "Cgroup123",
     room_id: str | None = None,
@@ -683,13 +777,36 @@ def _build_payload(
                     "userId": user_id,
                 },
                 "message": {
-                    "id": "325708",
+                    "id": message_id,
                     "type": "text",
                     "text": message_text,
+                    **(
+                        {"quotedMessageId": quoted_message_id}
+                        if quoted_message_id
+                        else {}
+                    ),
+                    **({"quoteToken": quote_token} if quote_token else {}),
                 },
             }
         ],
     }
+
+
+def _post_line_payload(
+    client: TestClient,
+    settings: Settings,
+    payload: dict[str, object],
+):
+    body = json.dumps(payload).encode("utf-8")
+    signature = generate_signature(settings.line_channel_secret, body)
+    return client.post(
+        "/webhooks/line",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Line-Signature": signature,
+        },
+    )
 
 
 def _build_postback_payload(
@@ -988,6 +1105,18 @@ def _matches_trip_source(
         return trip.room_id == source_scope.room_id
     if source_scope.source_type == "user":
         return trip.user_id == source_scope.user_id
+    return False
+
+
+def _matches_itinerary_scope(item, source_scope: SourceScope) -> bool:
+    if item.source_type != source_scope.source_type or item.trip_id != source_scope.trip_id:
+        return False
+    if source_scope.source_type == "group":
+        return item.group_id == source_scope.group_id
+    if source_scope.source_type == "room":
+        return item.room_id == source_scope.room_id
+    if source_scope.source_type == "user":
+        return item.user_id == source_scope.user_id
     return False
 
 
@@ -1316,7 +1445,8 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "2. 貼 Booking / Agoda / Airbnb 住宿連結\n"
                 "3. /整理 整理目前旅次資料\n"
                 "4. /清單 查看目前旅次清單\n"
-                "5. /摘要 產生 AI 決策摘要\n"
+                "5. /整理行程 整理整份行程文字\n"
+                "6. /摘要 產生 AI 決策摘要\n"
                 "\n"
                 "注意：沒有啟用中的旅次時，bot 不會收住宿連結。\n"
                 "\n"
@@ -1328,6 +1458,10 @@ def test_line_webhook_replies_help_for_help_command() -> None:
                 "/目前旅次：查看目前啟用中的旅次\n"
                 "/封存旅次：封存目前旅次並清空 active trip\n"
                 "/清單：回傳目前旅次的住宿 preview 與詳情頁連結\n"
+                "/整理行程：整理整份行程文字，或回覆既有行程訊息後整理\n"
+                "/套用行程：套用最近一次行程草稿\n"
+                "/取消行程：取消最近一次行程草稿\n"
+                "/行程：查看目前旅次的正式行程\n"
                 "/摘要：產生目前旅次的 AI 決策摘要\n"
                 "/整理：整理目前旅次中尚未補齊的住宿與地圖資料\n"
                 "/全部重來：忽略既有整理狀態，重新整理目前旅次中的所有住宿與地圖資料"
@@ -1398,6 +1532,211 @@ def test_line_webhook_replies_lodging_decision_summary() -> None:
                 "- 是否優先考慮交通便利性"
             ),
         )
+    ]
+
+
+def test_line_webhook_imports_inline_itinerary_as_pending_draft() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    itinerary_repository = InMemoryItineraryRepository()
+    snapshot_repository = InMemoryMessageSnapshotRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=InMemoryCapturedLinkRepository(),
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            message_snapshot_repository=snapshot_repository,
+            itinerary_import_service=ItineraryImportService(itinerary_repository),
+        )
+    )
+
+    payload = _build_payload(
+        "/整理行程\n"
+        "## 第 1 天 — 2026-06-01\n"
+        "- 09:30–11:00 | 若宮八幡社 | 抵達名古屋後輕鬆參拜"
+    )
+    response = _post_line_payload(client, settings, payload)
+
+    assert response.status_code == 200
+    assert len(snapshot_repository.snapshots) == 1
+    assert len(itinerary_repository.sources) == 1
+    assert len(itinerary_repository.drafts) == 1
+    assert itinerary_repository.sources[0].input_mode == "direct"
+    assert fake_line_client.calls[0][0] == "reply-token"
+    assert "已整理行程草稿" in fake_line_client.calls[0][1]
+    assert "新增 1 筆" in fake_line_client.calls[0][1]
+
+
+def test_line_webhook_imports_quoted_itinerary_snapshot() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    itinerary_repository = InMemoryItineraryRepository()
+    snapshot_repository = InMemoryMessageSnapshotRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=InMemoryCapturedLinkRepository(),
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            message_snapshot_repository=snapshot_repository,
+            itinerary_import_service=ItineraryImportService(itinerary_repository),
+        )
+    )
+    raw_payload = _build_payload(
+        "## 第 1 天 — 2026-06-01\n"
+        "- 09:30–11:00 | 若宮八幡社 | 抵達名古屋後輕鬆參拜",
+        message_id="itinerary-message",
+    )
+    _post_line_payload(client, settings, raw_payload)
+    fake_line_client.calls.clear()
+
+    command_payload = _build_payload(
+        "/整理行程",
+        message_id="command-message",
+        quoted_message_id="itinerary-message",
+    )
+    response = _post_line_payload(client, settings, command_payload)
+
+    assert response.status_code == 200
+    assert len(itinerary_repository.sources) == 1
+    assert itinerary_repository.sources[0].input_mode == "quoted"
+    assert itinerary_repository.sources[0].quoted_message_id == "itinerary-message"
+    assert "新增 1 筆" in fake_line_client.calls[0][1]
+
+
+def test_line_webhook_quoted_itinerary_handles_missing_snapshot() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    itinerary_repository = InMemoryItineraryRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=InMemoryCapturedLinkRepository(),
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            message_snapshot_repository=InMemoryMessageSnapshotRepository(),
+            itinerary_import_service=ItineraryImportService(itinerary_repository),
+        )
+    )
+
+    response = _post_line_payload(
+        client,
+        settings,
+        _build_payload("/整理行程", quoted_message_id="missing-message"),
+    )
+
+    assert response.status_code == 200
+    assert itinerary_repository.sources == []
+    assert fake_line_client.calls == [
+        (
+            "reply-token",
+            "找不到被引用的行程內容。可能是這則訊息是在功能上線前送出，或已超過保存期限。",
+        )
+    ]
+
+
+def test_line_webhook_itinerary_import_requires_active_trip() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    itinerary_repository = InMemoryItineraryRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=InMemoryCapturedLinkRepository(),
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            active_trip=False,
+            itinerary_import_service=ItineraryImportService(itinerary_repository),
+        )
+    )
+
+    response = _post_line_payload(
+        client,
+        settings,
+        _build_payload(
+            "/整理行程\n"
+            "## 第 1 天 — 2026-06-01\n"
+            "- 09:30–11:00 | 若宮八幡社 | 抵達名古屋後輕鬆參拜"
+        ),
+    )
+
+    assert response.status_code == 200
+    assert itinerary_repository.sources == []
+    assert fake_line_client.calls == [
+        (
+            "reply-token",
+            "目前沒有啟用中的旅次，請先用 /建立旅次 <名稱> 建立，或用 /切換旅次 <名稱> 切換。",
+        )
+    ]
+
+
+def test_line_webhook_applies_discards_and_lists_itinerary() -> None:
+    settings = Settings(
+        line_channel_secret="super-secret",
+        line_channel_access_token="line-token",
+    )
+    fake_line_client = FakeLineClient()
+    itinerary_repository = InMemoryItineraryRepository()
+    client = TestClient(
+        create_app(
+            settings=settings,
+            collector=InMemoryCapturedLinkRepository(),
+            line_client=fake_line_client,
+            lodging_link_service=LodgingLinkService(FakeLodgingUrlResolver()),
+            itinerary_import_service=ItineraryImportService(itinerary_repository),
+        )
+    )
+
+    _post_line_payload(
+        client,
+        settings,
+        _build_payload(
+            "/整理行程\n"
+            "## 第 1 天 — 2026-06-01\n"
+            "- 09:30–11:00 | 若宮八幡社 | 抵達名古屋後輕鬆參拜"
+        ),
+    )
+    fake_line_client.calls.clear()
+    apply_response = _post_line_payload(client, settings, _build_payload("/套用行程"))
+    list_response = _post_line_payload(client, settings, _build_payload("/行程"))
+    no_pending_response = _post_line_payload(client, settings, _build_payload("/套用行程"))
+
+    assert apply_response.status_code == 200
+    assert list_response.status_code == 200
+    assert no_pending_response.status_code == 200
+    assert "行程已套用：新增 1 筆" in fake_line_client.calls[0][1]
+    assert "目前行程：東京 2026" in fake_line_client.calls[1][1]
+    assert "若宮八幡社" in fake_line_client.calls[1][1]
+    assert fake_line_client.calls[2] == ("reply-token", "目前沒有等待套用的行程草稿。")
+
+    _post_line_payload(
+        client,
+        settings,
+        _build_payload(
+            "/整理行程\n"
+            "## 第 1 天 — 2026-06-01\n"
+            "- 12:00–13:00 | 午餐自由 | 自由找餐廳"
+        ),
+    )
+    fake_line_client.calls.clear()
+    discard_response = _post_line_payload(client, settings, _build_payload("/取消行程"))
+
+    assert discard_response.status_code == 200
+    assert fake_line_client.calls == [
+        ("reply-token", "已取消這次行程草稿，正式行程沒有變更。")
     ]
 
 
